@@ -7,15 +7,9 @@ Jephtah runs cold email outreach for his dev agency (garage door repair, chiropr
 ## 2. Goal
 
 A single-user, always-running pipeline that:
-1. Finds businesses in a target niche/city
-2. Finds their contact email (scraping their website or from Google Places data) and pulls site content for personalization
-3. Generates a personalized, human-sounding cold email
-4. Sends it automatically, within safe daily limits
-5. Sends one automatic follow-up after 7 days if nothing else happened
-6. Logs everything, and expands into new niches on its own once a niche is exhausted
-1. Finds businesses in a target niche/city
-2. Pulls their site content
-3. Generates a personalized, human-sounding cold email
+1. Finds businesses in a target niche/city via Google Places
+2. Finds contact emails by scraping their website (cross-matching with Google Places email if present) or pulling directly from Google Places data for businesses without websites
+3. Generates a personalized cold email tailored to their state: pitching a new website for businesses without one, or site modifications/redesign & SEO to rank higher for businesses with existing websites
 4. Sends it automatically, within safe daily limits
 5. Sends one automatic follow-up after 7 days if nothing else happened
 6. Logs everything, and expands into new niches on its own once a niche is exhausted
@@ -44,8 +38,8 @@ No manual review step in the loop. Jephtah checks in on a dashboard when he want
 | Opt-out language | Deliberately omitted. Note: CAN-SPAM technically covers one-time commercial outreach too (real sender identity, physical address, some opt-out path) — not just newsletters. Not legal advice, and enforcement risk for this scale is low, but it's a conscious tradeoff being made, not an oversight. |
 | Blocklist | Not built — no opt-out mechanism means nothing to check against. Dedup (never email the same business twice) is kept regardless, since that's just avoiding wasted/duplicate sends, unrelated to compliance. |
 | AI provider | DeepSeek (OpenAI-compatible API) for scrape-summarization and email generation, behind one swappable function so another provider can be dropped in later. |
-| Email sourcing | Primary source: scrape the business's own website (homepage, /contact, /about, footer) for email addresses using regex + `mailto:` link extraction. Fallback: capture phone/email from Google Places if provided. Leads without any discoverable email are marked `failed` before generation — no AI cost wasted on uncontactable businesses. |
-| Business discovery | Google Places API (Text Search — New). Has a real per-call cost, offset by Google's monthly free credit at this volume — the one line item worth watching in Google Cloud billing. |
+| Email sourcing | Businesses with websites: scrape site (homepage, `/contact`, `/about`, footer) using regex + `mailto:` link extraction and cross-match/validate with email from Google Places if available (prefer website email). Businesses without websites: source email/contact info directly from Google Places details. Leads with no discoverable email are marked `failed` before generation. |
+| Offer positioning | Differentiated cold outreach angle based on site status: Businesses without a website receive a pitch for a **new website build** to capture local leads. Businesses with an existing website receive a pitch for **website redesign/modifications & SEO optimization** to rank higher on Google Search & Maps. |
 | Business discovery | Google Places API (Text Search — New). Has a real per-call cost, offset by Google's monthly free credit at this volume — the one line item worth watching in Google Cloud billing. |
 | Automation trigger | A scheduled job (GitHub Actions, free) calls one protected URL on your app daily. No server needs to run 24/7. |
 
@@ -55,14 +49,14 @@ No manual review step in the loop. Jephtah checks in on a dashboard when he want
 - **Dedup**: never contact the same business twice (checked by domain + place_id before every send).
 - **Follow-up cap**: exactly one follow-up per lead, only once, only 7+ days after the first send.
 - **Pause switch**: one flag in settings that halts all sending immediately.
-- **Style guardrail**: the AI prompt enforces Jephtah's known preferences (no em dashes, no corporate filler, no template-triplet phrasing, one honest specific detail as the opener, no generic "I noticed your website..." lines) — tuned against real output in the build phase, not assumed correct on the first try.
+- **Style guardrail**: the AI prompt enforces Jephtah's known preferences (no em dashes, no corporate filler, no template-triplet phrasing, one honest specific detail as the opener, no generic "I noticed your website..." lines) and dynamically adjusts the pitch angle depending on whether the business has an existing website or not.
 
 ## 6. Architecture (high level)
 
 - **Frontend/dashboard**: Next.js (App Router, TypeScript, Tailwind) — a simple internal tool, passcode-gated.
 - **Database**: Neon (serverless Postgres) — 3 tables: `niches`, `leads`, `settings`. Plain `pg` for queries, no ORM, no vendor-specific client — Neon is being used purely as hosted Postgres.
-- **Scraping & email extraction**: server-side fetch + text extraction from the business's own website (homepage + /contact + /about if linked), plus regex-based email extraction and `mailto:` link parsing from the same pages. Google Places phone/email is captured at discovery time as a fallback. Businesses without a website are still inserted if Google Places has contact info, using the business name + address as the personalization context instead of scraped site text.
-- **AI generation**: DeepSeek API call, one function boundary so the provider can be swapped later.
+- **Scraping & email extraction**: server-side fetch + text extraction from the business's own website (homepage + `/contact` + `/about` if linked), plus regex-based email extraction and `mailto:` link parsing. When scraping businesses with websites, any extracted site email is cross-matched against Google Places email data. Businesses without a website are inserted if Google Places provides contact info, using the business name + address as personalization context.
+- **AI generation**: DeepSeek API call, using custom prompt logic that branches based on website presence (pitching site modifications & SEO optimization vs. building a new website from scratch), behind one swappable function.
 - **Sending**: Resend API, domain verified, tracking enabled.
 - **Automation trigger**: GitHub Actions cron calling a protected endpoint on a schedule.
 - **Webhook**: one endpoint to receive Resend's open-tracking events and write them to the DB.
