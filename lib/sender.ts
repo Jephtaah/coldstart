@@ -1,0 +1,81 @@
+import { pool } from './db'
+import { Resend } from 'resend'
+
+export async function sendBatch(): Promise<number> {
+  const apiKey = process.env.RESEND_API_KEY
+  if (!apiKey) {
+    throw new Error('RESEND_API_KEY is not set in environment variables.')
+  }
+
+  const senderDomain = process.env.SENDER_DOMAIN || 'example.com'
+  const fromEmail = `outreach@${senderDomain}`
+
+  const resend = new Resend(apiKey)
+
+  // 1. Check settings table
+  const settingsResult = await pool.query('SELECT daily_cap, paused FROM settings WHERE id = 1')
+  if (settingsResult.rows.length === 0) {
+    throw new Error('Settings table row with id = 1 not found.')
+  }
+
+  const settings = settingsResult.rows[0]
+  if (settings.paused) {
+    return 0
+  }
+
+  const dailyCap = settings.daily_cap
+
+  // 2. Count today's sent initial emails (UTC date)
+  const countResult = await pool.query(
+    `SELECT COUNT(*) FROM leads WHERE initial_sent_at >= CURRENT_DATE`
+  )
+  const sentTodayCount = parseInt(countResult.rows[0].count, 10) || 0
+  const remaining = dailyCap - sentTodayCount
+
+  if (remaining <= 0) {
+    return 0
+  }
+
+  // 3. Fetch up to 'remaining' leads with status = 'generated'
+  const leadsResult = await pool.query(
+    `SELECT id, email, generated_subject, generated_body FROM leads WHERE status = 'generated' LIMIT $1`,
+    [remaining]
+  )
+
+  const leads = leadsResult.rows
+  if (leads.length === 0) {
+    return 0
+  }
+
+  let successfullySent = 0
+
+  for (const lead of leads) {
+    if (!lead.email || !lead.generated_subject || !lead.generated_body) {
+      await pool.query('UPDATE leads SET status = $1 WHERE id = $2', ['failed', lead.id])
+      continue
+    }
+
+    try {
+      const emailResponse = await resend.emails.send({
+        from: fromEmail,
+        to: lead.email,
+        subject: lead.generated_subject,
+        text: lead.generated_body,
+        replyTo: process.env.REPLY_TO_EMAIL,
+      })
+
+      const resendId = emailResponse.data?.id || 'unknown_id'
+
+      await pool.query(
+        `UPDATE leads SET initial_sent_at = NOW(), initial_resend_id = $1, status = 'sent' WHERE id = $2`,
+        [resendId, lead.id]
+      )
+
+      successfullySent++
+    } catch {
+      await pool.query('UPDATE leads SET status = $1 WHERE id = $2', ['failed', lead.id])
+    }
+  }
+
+  return successfullySent
+}
