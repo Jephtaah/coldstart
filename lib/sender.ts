@@ -56,13 +56,21 @@ export async function sendBatch(): Promise<number> {
     }
 
     try {
-      const emailResponse = await resend.emails.send({
+      const emailPromise = resend.emails.send({
         from: fromEmail,
         to: lead.email,
         subject: lead.generated_subject,
         text: lead.generated_body,
         replyTo: process.env.REPLY_TO_EMAIL,
       })
+
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('Resend API timeout')), 10000)
+      )
+
+      const emailResponse = (await Promise.race([emailPromise, timeoutPromise])) as Awaited<
+        ReturnType<typeof resend.emails.send>
+      >
 
       const resendId = emailResponse.data?.id || 'unknown_id'
 

@@ -41,6 +41,8 @@ Return STRICT JSON as an array of objects with this exact structure, with no oth
 `
 
   for (let attempt = 0; attempt < 2; attempt++) {
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 20000)
     try {
       const res = await fetch('https://api.deepseek.com/chat/completions', {
         method: 'POST',
@@ -56,7 +58,9 @@ Return STRICT JSON as an array of objects with this exact structure, with no oth
           ],
           temperature: 0.7,
         }),
+        signal: controller.signal,
       })
+      clearTimeout(timeoutId)
 
       if (!res.ok) {
         throw new Error(`DeepSeek API error: ${res.status} ${await res.text()}`)
@@ -95,6 +99,7 @@ Return STRICT JSON as an array of objects with this exact structure, with no oth
         return insertedCount
       }
     } catch (err) {
+      clearTimeout(timeoutId)
       console.error('Error in expandNiches:', err)
     }
   }

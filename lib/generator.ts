@@ -53,6 +53,8 @@ ${scrapedContent}
 
   async function callAI(): Promise<{ subject: string; body: string } | null> {
     for (let attempt = 0; attempt < 2; attempt++) {
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 20000)
       try {
         const res = await fetch('https://api.deepseek.com/chat/completions', {
           method: 'POST',
@@ -68,7 +70,9 @@ ${scrapedContent}
             ],
             temperature: 0.7,
           }),
+          signal: controller.signal,
         })
+        clearTimeout(timeoutId)
 
         if (!res.ok) {
           throw new Error(`DeepSeek API error: ${res.status} ${await res.text()}`)
@@ -86,6 +90,7 @@ ${scrapedContent}
           return { subject: parsed.subject, body: parsed.body }
         }
       } catch {
+        clearTimeout(timeoutId)
         // Retry on parse failure or network error
       }
     }

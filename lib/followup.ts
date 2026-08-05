@@ -83,6 +83,8 @@ Previous Subject: ${lead.generated_subject || ''}
 
     async function generateFollowUpAI(): Promise<{ subject: string; body: string } | null> {
       for (let attempt = 0; attempt < 2; attempt++) {
+        const controller = new AbortController()
+        const timeoutId = setTimeout(() => controller.abort(), 20000)
         try {
           const res = await fetch('https://api.deepseek.com/chat/completions', {
             method: 'POST',
@@ -98,7 +100,9 @@ Previous Subject: ${lead.generated_subject || ''}
               ],
               temperature: 0.7,
             }),
+            signal: controller.signal,
           })
+          clearTimeout(timeoutId)
 
           if (!res.ok) {
             throw new Error(`DeepSeek API error: ${res.status} ${await res.text()}`)
@@ -116,6 +120,7 @@ Previous Subject: ${lead.generated_subject || ''}
             return { subject: parsed.subject, body: parsed.body }
           }
         } catch {
+          clearTimeout(timeoutId)
           // Retry on parse failure or network error
         }
       }
@@ -130,13 +135,21 @@ Previous Subject: ${lead.generated_subject || ''}
     }
 
     try {
-      const emailResponse = await resend.emails.send({
+      const emailPromise = resend.emails.send({
         from: fromEmail,
         to: lead.email,
         subject: emailData.subject,
         text: emailData.body,
         replyTo: process.env.REPLY_TO_EMAIL,
       })
+
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('Resend API timeout')), 10000)
+      )
+
+      const emailResponse = (await Promise.race([emailPromise, timeoutPromise])) as Awaited<
+        ReturnType<typeof resend.emails.send>
+      >
 
       const resendId = emailResponse.data?.id || 'unknown_id'
 

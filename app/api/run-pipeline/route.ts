@@ -6,6 +6,7 @@ import { generateEmail } from '@/lib/generator'
 import { sendBatch } from '@/lib/sender'
 import { sendFollowUps } from '@/lib/followup'
 import { expandNiches } from '@/lib/expansion'
+import { Resend } from 'resend'
 
 export const dynamic = 'force-dynamic'
 
@@ -159,6 +160,27 @@ export async function GET(request: Request) {
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err)
     results.settings = { success: false, error: message }
+  }
+
+  // Check for failures and send alert email if configured
+  const failedStages = Object.entries(results).filter(([_, res]) => !res.success || res.error)
+  if (failedStages.length > 0 && process.env.RESEND_API_KEY && process.env.REPLY_TO_EMAIL) {
+    try {
+      const resend = new Resend(process.env.RESEND_API_KEY)
+      const senderDomain = process.env.SENDER_DOMAIN || 'example.com'
+      const errorSummary = failedStages
+        .map(([stage, res]) => `- ${stage}: ${res.error || 'Failed'}`)
+        .join('\n')
+
+      await resend.emails.send({
+        from: `outreach@${senderDomain}`,
+        to: process.env.REPLY_TO_EMAIL,
+        subject: '[ColdStart Alert] Pipeline Run Encountered Errors',
+        text: `The cold outreach pipeline ran on ${new Date().toISOString()} with errors in the following stages:\n\n${errorSummary}\n\nFull results:\n${JSON.stringify(results, null, 2)}`,
+      })
+    } catch (alertErr) {
+      console.error('Failed to send pipeline error alert email:', alertErr)
+    }
   }
 
   return NextResponse.json({ success: true, results }, { status: 200 })

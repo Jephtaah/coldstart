@@ -23,17 +23,28 @@ export async function discoverBusinesses(
     throw new Error('GOOGLE_PLACES_API_KEY is not set in environment variables.')
   }
 
-  const response = await fetch('https://places.googleapis.com/v1/places:searchText', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Goog-Api-Key': apiKey,
-      'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.websiteUri',
-    },
-    body: JSON.stringify({
-      textQuery: `${nicheLabel} in ${city}`,
-    }),
-  })
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), 10000)
+
+  let response: Response
+  try {
+    response = await fetch('https://places.googleapis.com/v1/places:searchText', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Goog-Api-Key': apiKey,
+        'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.websiteUri',
+      },
+      body: JSON.stringify({
+        textQuery: `${nicheLabel} in ${city}`,
+      }),
+      signal: controller.signal,
+    })
+  } catch (err: unknown) {
+    throw new Error(`Google Places API network error or timeout: ${err instanceof Error ? err.message : String(err)}`)
+  } finally {
+    clearTimeout(timeoutId)
+  }
 
   if (!response.ok) {
     const errorText = await response.text()
