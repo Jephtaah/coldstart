@@ -210,103 +210,149 @@ export default function DashboardClient({
     }
   }
 
+  // Calculate opening rate
+  const openRate = stats.sent_total > 0 ? ((stats.opened_total / stats.sent_total) * 100).toFixed(1) : '0.0'
+
   return (
-    <div className="min-h-screen bg-zinc-50 text-zinc-900 font-sans">
-      {/* Top Header */}
-      <header className="border-b border-zinc-200 bg-white px-6 py-4">
+    <div className="min-h-screen bg-[#F8F8F5] text-[#141413] font-sans selection:bg-[#141413] selection:text-[#F8F8F5]">
+      {/* Editorial Top Header */}
+      <header className="border-b border-[#E6E6DF] bg-white/80 backdrop-blur-md sticky top-0 z-30 px-6 py-4">
         <div className="max-w-7xl mx-auto flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-          <div>
-            <h1 className="text-xl font-bold tracking-tight">Cold Outreach Pipeline</h1>
-            <p className="text-sm text-zinc-500">Autonomous lead generation, personalization, and sending.</p>
-          </div>
           <div className="flex items-center gap-3">
-            <span
-              className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium ${
-                paused ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'
-              }`}
-            >
-              {paused ? 'Paused' : 'Active'}
-            </span>
-            <span className="text-xs text-zinc-500">
-              Last Run: {initialSettings.last_run_at ? new Date(initialSettings.last_run_at).toLocaleString() : 'Never'}
+            <div className="w-9 h-9 rounded-lg bg-[#141413] text-white flex items-center justify-center font-mono font-bold text-sm tracking-tighter shadow-sm">
+              CS
+            </div>
+            <div>
+              <h1 className="text-base font-semibold tracking-tight text-[#141413]">ColdStart Operator</h1>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-4 bg-[#F2F2EE] px-3.5 py-1.5 rounded-full border border-[#E0E0D8]">
+            <div className="flex items-center gap-2">
+              <span
+                className={`w-2 h-2 rounded-full animate-pulse ${
+                  paused ? 'bg-amber-500' : 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]'
+                }`}
+              />
+              <span className="text-xs font-medium uppercase tracking-wider text-[#383833]">
+                {paused ? 'Pipeline Paused' : 'Pipeline Running'}
+              </span>
+            </div>
+            <span className="text-[#D0D0C8]">|</span>
+            <span className="text-xs text-[#6B6B65] font-mono">
+              Sync: {initialSettings.last_run_at ? new Date(initialSettings.last_run_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Never'}
             </span>
           </div>
         </div>
       </header>
 
       {/* Main Container */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 py-8">
-        {/* Stats Row */}
-        <div className="grid grid-cols-1 sm:grid-cols-4 gap-4 mb-8">
-          <div className="bg-white p-5 rounded-lg border border-zinc-200 shadow-sm">
-            <p className="text-xs font-medium text-zinc-500 uppercase tracking-wider">Total Leads</p>
-            <p className="text-2xl font-semibold mt-1">{stats.total}</p>
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 py-8 space-y-8">
+        {/* Stats Grid */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="bg-white p-5 rounded-xl border border-[#E6E6DF] shadow-[0_1px_3px_rgba(0,0,0,0.02)] relative overflow-hidden group hover:border-[#CCCCCC] transition-colors">
+            <div className="absolute top-0 left-0 right-0 h-[2px] bg-[#141413]" />
+            <p className="text-[11px] font-mono uppercase tracking-widest text-[#71716B]">Total Prospect Pool</p>
+            <div className="flex items-baseline justify-between mt-2">
+              <span className="text-3xl font-semibold tracking-tight text-[#141413] font-mono">{stats.total}</span>
+              <span className="text-xs font-medium text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200/60">
+                Active DB
+              </span>
+            </div>
           </div>
-          <div className="bg-white p-5 rounded-lg border border-zinc-200 shadow-sm">
-            <p className="text-xs font-medium text-zinc-500 uppercase tracking-wider">Sent Today</p>
-            <p className="text-2xl font-semibold mt-1">
-              {stats.sent_today} / {initialSettings.daily_cap}
-            </p>
+
+          <div className="bg-white p-5 rounded-xl border border-[#E6E6DF] shadow-[0_1px_3px_rgba(0,0,0,0.02)] relative overflow-hidden group hover:border-[#CCCCCC] transition-colors">
+            <div className="absolute top-0 left-0 right-0 h-[2px] bg-amber-600" />
+            <p className="text-[11px] font-mono uppercase tracking-widest text-[#71716B]">Sent Today / Cap</p>
+            <div className="flex items-baseline justify-between mt-2">
+              <span className="text-3xl font-semibold tracking-tight text-[#141413] font-mono">
+                {stats.sent_today} <span className="text-sm text-[#8C8C85] font-normal">/ {initialSettings.daily_cap}</span>
+              </span>
+              <div className="w-16 bg-[#EFEFED] h-2 rounded-full overflow-hidden border border-[#D9D9D3]">
+                <div
+                  className="bg-amber-600 h-full rounded-full transition-all duration-500"
+                  style={{ width: `${Math.min(100, (stats.sent_today / Math.max(1, initialSettings.daily_cap)) * 100)}%` }}
+                />
+              </div>
+            </div>
           </div>
-          <div className="bg-white p-5 rounded-lg border border-zinc-200 shadow-sm">
-            <p className="text-xs font-medium text-zinc-500 uppercase tracking-wider">Total Sent</p>
-            <p className="text-2xl font-semibold mt-1">{stats.sent_total}</p>
+
+          <div className="bg-white p-5 rounded-xl border border-[#E6E6DF] shadow-[0_1px_3px_rgba(0,0,0,0.02)] relative overflow-hidden group hover:border-[#CCCCCC] transition-colors">
+            <div className="absolute top-0 left-0 right-0 h-[2px] bg-blue-600" />
+            <p className="text-[11px] font-mono uppercase tracking-widest text-[#71716B]">Total Dispatched</p>
+            <div className="flex items-baseline justify-between mt-2">
+              <span className="text-3xl font-semibold tracking-tight text-[#141413] font-mono">{stats.sent_total}</span>
+              <span className="text-xs font-mono text-[#6B6B65]">emails delivered</span>
+            </div>
           </div>
-          <div className="bg-white p-5 rounded-lg border border-zinc-200 shadow-sm">
-            <p className="text-xs font-medium text-zinc-500 uppercase tracking-wider">Opened</p>
-            <p className="text-2xl font-semibold mt-1">{stats.opened_total}</p>
+
+          <div className="bg-white p-5 rounded-xl border border-[#E6E6DF] shadow-[0_1px_3px_rgba(0,0,0,0.02)] relative overflow-hidden group hover:border-[#CCCCCC] transition-colors">
+            <div className="absolute top-0 left-0 right-0 h-[2px] bg-emerald-600" />
+            <p className="text-[11px] font-mono uppercase tracking-widest text-[#71716B]">Open Engagement Rate</p>
+            <div className="flex items-baseline justify-between mt-2">
+              <span className="text-3xl font-semibold tracking-tight text-[#141413] font-mono">{openRate}%</span>
+              <span className="text-xs font-medium text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200/60">
+                {stats.opened_total} opened
+              </span>
+            </div>
           </div>
         </div>
 
-        {/* Tabs */}
-        <div className="border-b border-zinc-200 mb-6">
+        {/* Navigation Tabs */}
+        <div className="border-b border-[#E6E6DF] flex items-center justify-between">
           <nav className="-mb-px flex space-x-8">
             <button
               onClick={() => setActiveTab('leads')}
-              className={`py-4 px-1 border-b-2 font-medium text-sm ${
+              className={`py-3.5 px-1 border-b-2 font-medium text-sm transition-colors flex items-center gap-2 ${
                 activeTab === 'leads'
-                  ? 'border-zinc-900 text-zinc-950'
-                  : 'border-transparent text-zinc-500 hover:text-zinc-700 hover:border-zinc-300'
+                  ? 'border-[#141413] text-[#141413]'
+                  : 'border-transparent text-[#71716B] hover:text-[#383833] hover:border-[#CCCCCC]'
               }`}
             >
-              Leads ({initialLeads.length})
+              <span>Leads Directory</span>
+              <span className="text-xs font-mono px-2 py-0.5 rounded-full bg-[#EFEFED] text-[#595955] border border-[#D9D9D3]">
+                {initialLeads.length}
+              </span>
             </button>
             <button
               onClick={() => setActiveTab('targeting')}
-              className={`py-4 px-1 border-b-2 font-medium text-sm ${
+              className={`py-3.5 px-1 border-b-2 font-medium text-sm transition-colors flex items-center gap-2 ${
                 activeTab === 'targeting'
-                  ? 'border-zinc-900 text-zinc-950'
-                  : 'border-transparent text-zinc-500 hover:text-zinc-700 hover:border-zinc-300'
+                  ? 'border-[#141413] text-[#141413]'
+                  : 'border-transparent text-[#71716B] hover:text-[#383833] hover:border-[#CCCCCC]'
               }`}
             >
-              Targeting & Niches ({initialNiches.length})
+              <span>Targeting Matrix</span>
+              <span className="text-xs font-mono px-2 py-0.5 rounded-full bg-[#EFEFED] text-[#595955] border border-[#D9D9D3]">
+                {initialNiches.length}
+              </span>
             </button>
             <button
               onClick={() => setActiveTab('settings')}
-              className={`py-4 px-1 border-b-2 font-medium text-sm ${
+              className={`py-3.5 px-1 border-b-2 font-medium text-sm transition-colors ${
                 activeTab === 'settings'
-                  ? 'border-zinc-900 text-zinc-950'
-                  : 'border-transparent text-zinc-500 hover:text-zinc-700 hover:border-zinc-300'
+                  ? 'border-[#141413] text-[#141413]'
+                  : 'border-transparent text-[#71716B] hover:text-[#383833] hover:border-[#CCCCCC]'
               }`}
             >
-              Settings
+              Pipeline Settings
             </button>
           </nav>
         </div>
 
         {/* Tab 1: Leads */}
         {activeTab === 'leads' && (
-          <div className="bg-white rounded-lg border border-zinc-200 shadow-sm overflow-hidden">
-            <div className="p-4 border-b border-zinc-200 flex flex-col sm:flex-row justify-between items-center gap-4">
-              <div className="flex flex-wrap items-center gap-2">
+          <div className="bg-white rounded-xl border border-[#E6E6DF] shadow-[0_1px_3px_rgba(0,0,0,0.02)] overflow-hidden">
+            <div className="p-4 sm:p-5 border-b border-[#E6E6DF] bg-[#FAFAF7] flex flex-col sm:flex-row justify-between items-center gap-4">
+              <div className="flex flex-wrap items-center gap-1.5">
                 {['all', 'new', 'scraped', 'generated', 'sent', 'followed_up', 'failed'].map((st) => (
                   <button
                     key={st}
                     onClick={() => setStatusFilter(st)}
-                    className={`px-3 py-1.5 rounded-md text-xs font-medium capitalize transition-colors ${
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium capitalize transition-all ${
                       statusFilter === st
-                        ? 'bg-zinc-900 text-white'
-                        : 'bg-zinc-100 text-zinc-600 hover:bg-zinc-200'
+                        ? 'bg-[#141413] text-white shadow-sm'
+                        : 'bg-white text-[#595955] hover:bg-[#F0F0EC] border border-[#E0E0D8]'
                     }`}
                   >
                     {st.replace('_', ' ')}
@@ -316,83 +362,103 @@ export default function DashboardClient({
               <div className="w-full sm:w-auto">
                 <input
                   type="text"
-                  placeholder="Search business, email, website..."
+                  placeholder="Filter by business, email, website..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full sm:w-64 px-3 py-1.5 text-sm border border-zinc-300 rounded-md focus:outline-none focus:ring-1 focus:ring-zinc-900"
+                  className="w-full sm:w-72 px-3.5 py-2 text-sm bg-white border border-[#D9D9D3] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#141413]/20 focus:border-[#141413] transition-all"
                 />
               </div>
             </div>
 
             <div className="overflow-x-auto">
               <table className="w-full text-left text-sm">
-                <thead className="bg-zinc-50 border-b border-zinc-200 text-zinc-500 font-medium">
+                <thead className="bg-[#F5F5F0] border-b border-[#E6E6DF] text-[#6B6B65] font-mono text-xs uppercase tracking-wider">
                   <tr>
-                    <th className="px-6 py-3">Business Name</th>
-                    <th className="px-6 py-3">Status</th>
-                    <th className="px-6 py-3">Website</th>
-                    <th className="px-6 py-3">Email</th>
-                    <th className="px-6 py-3">Sent At</th>
-                    <th className="px-6 py-3">Opened At</th>
+                    <th className="px-6 py-3.5 font-medium">Business / Location</th>
+                    <th className="px-6 py-3.5 font-medium">Pipeline Status</th>
+                    <th className="px-6 py-3.5 font-medium">Website</th>
+                    <th className="px-6 py-3.5 font-medium">Email Address</th>
+                    <th className="px-6 py-3.5 font-medium">Sent Timestamp</th>
+                    <th className="px-6 py-3.5 font-medium">Engagement</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-zinc-200">
+                <tbody className="divide-y divide-[#EFEFED]">
                   {filteredLeads.length === 0 ? (
                     <tr>
-                      <td colSpan={6} className="px-6 py-8 text-center text-zinc-500">
-                        No leads found matching current filter.
+                      <td colSpan={6} className="px-6 py-12 text-center text-[#71716B]">
+                        <div className="max-w-xs mx-auto space-y-2">
+                          <p className="font-medium text-[#383833]">No leads found matching current filter</p>
+                          <p className="text-xs text-[#8C8C85]">Try adjusting your search query or status filter above.</p>
+                        </div>
                       </td>
                     </tr>
                   ) : (
                     filteredLeads.map((lead) => (
-                      <tr key={lead.id} className="hover:bg-zinc-50">
-                        <td className="px-6 py-4 font-medium text-zinc-900">
-                          {lead.business_name}
-                          {lead.address && <div className="text-xs text-zinc-500 font-normal">{lead.address}</div>}
+                      <tr key={lead.id} className="hover:bg-[#FCFCFA] transition-colors">
+                        <td className="px-6 py-4">
+                          <div className="font-medium text-[#141413]">{lead.business_name}</div>
+                          {lead.address && <div className="text-xs text-[#71716B] mt-0.5">{lead.address}</div>}
                         </td>
                         <td className="px-6 py-4">
                           <span
-                            className={`inline-flex px-2 py-0.5 rounded text-xs font-medium capitalize ${
+                            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium capitalize border ${
                               lead.status === 'sent' || lead.status === 'followed_up'
-                                ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                                ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
                                 : lead.status === 'failed'
-                                ? 'bg-red-50 text-red-700 border border-red-200'
+                                ? 'bg-rose-50 text-rose-800 border-rose-200'
                                 : lead.status === 'generated' || lead.status === 'scraped'
-                                ? 'bg-blue-50 text-blue-700 border border-blue-200'
-                                : 'bg-zinc-100 text-zinc-700'
+                                ? 'bg-sky-50 text-sky-800 border-sky-200'
+                                : 'bg-[#F0F0EC] text-[#595955] border-[#D9D9D3]'
                             }`}
                           >
+                            <span className={`w-1.5 h-1.5 rounded-full ${
+                              lead.status === 'sent' || lead.status === 'followed_up'
+                                ? 'bg-emerald-600'
+                                : lead.status === 'failed'
+                                ? 'bg-rose-600'
+                                : lead.status === 'generated' || lead.status === 'scraped'
+                                ? 'bg-sky-600'
+                                : 'bg-[#8C8C85]'
+                            }`} />
                             {lead.status.replace('_', ' ')}
                           </span>
                         </td>
-                        <td className="px-6 py-4 text-zinc-600 truncate max-w-xs">
+                        <td className="px-6 py-4 font-mono text-xs text-[#595955] truncate max-w-xs">
                           {lead.website ? (
                             <a
                               href={lead.website.startsWith('http') ? lead.website : `https://${lead.website}`}
                               target="_blank"
                               rel="noreferrer"
-                              className="text-blue-600 hover:underline"
+                              className="text-blue-600 hover:underline inline-flex items-center gap-1"
                             >
-                              {lead.website}
+                              {lead.website.replace(/^https?:\/\//, '')}
+                              <svg className="w-3 h-3 opacity-60" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                              </svg>
                             </a>
                           ) : (
-                            <span className="text-zinc-400 italic">No website</span>
+                            <span className="text-[#A3A39E] italic">Unlisted</span>
                           )}
                         </td>
-                        <td className="px-6 py-4 text-zinc-600">{lead.email || <span className="text-zinc-400 italic">None</span>}</td>
-                        <td className="px-6 py-4 text-zinc-500 text-xs">
-                          {lead.initial_sent_at ? new Date(lead.initial_sent_at).toLocaleString() : '-'}
+                        <td className="px-6 py-4 font-mono text-xs text-[#383833]">
+                          {lead.email || <span className="text-[#A3A39E] italic font-sans">No email found</span>}
+                        </td>
+                        <td className="px-6 py-4 font-mono text-xs text-[#71716B]">
+                          {lead.initial_sent_at ? new Date(lead.initial_sent_at).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }) : '—'}
                           {lead.followup_sent_at && (
-                            <div className="mt-0.5 text-zinc-400">
-                              Fu: {new Date(lead.followup_sent_at).toLocaleString()}
+                            <div className="text-[10px] text-[#A3A39E] mt-0.5">
+                              FU: {new Date(lead.followup_sent_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                             </div>
                           )}
                         </td>
-                        <td className="px-6 py-4 text-zinc-500 text-xs">
+                        <td className="px-6 py-4">
                           {lead.initial_opened_at ? (
-                            <span className="text-emerald-600 font-medium">Opened</span>
+                            <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 animate-pulse" />
+                              Opened
+                            </span>
                           ) : (
-                            '-'
+                            <span className="text-xs text-[#A3A39E]">—</span>
                           )}
                         </td>
                       </tr>
@@ -406,140 +472,182 @@ export default function DashboardClient({
 
         {/* Tab 2: Targeting & Niches */}
         {activeTab === 'targeting' && (
-          <div className="space-y-8">
-            <div className="bg-white p-6 rounded-lg border border-zinc-200 shadow-sm">
-              <h2 className="text-lg font-semibold mb-2">Preset Industries & Cities</h2>
-              <p className="text-sm text-zinc-500 mb-6">
-                Select your targeting matrix. Minimum 3 industries and 3 cities required (yielding at least 9 active search pools).
-              </p>
-
-              {targetingError && (
-                <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-700 text-sm rounded-md">
-                  {targetingError}
-                </div>
-              )}
-              {targetingSuccess && (
-                <div className="mb-4 p-3 bg-emerald-50 border border-emerald-200 text-emerald-700 text-sm rounded-md">
-                  {targetingSuccess}
-                </div>
-              )}
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-6">
+          <div className="space-y-6">
+            <div className="bg-white p-6 sm:p-8 rounded-xl border border-[#E6E6DF] shadow-[0_1px_3px_rgba(0,0,0,0.02)]">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
                 <div>
-                  <h3 className="text-sm font-medium text-zinc-700 mb-3">Industries ({selectedIndustries.length} selected)</h3>
-                  <div className="space-y-2 max-h-60 overflow-y-auto p-2 border border-zinc-200 rounded-md">
-                    {defaultIndustries.map((ind) => (
-                      <label key={ind} className="flex items-center gap-2 text-sm cursor-pointer hover:bg-zinc-50 p-1 rounded">
-                        <input
-                          type="checkbox"
-                          checked={selectedIndustries.includes(ind)}
-                          onChange={() => handleToggleIndustry(ind)}
-                          className="rounded border-zinc-300 text-zinc-900 focus:ring-zinc-900"
-                        />
-                        {ind}
-                      </label>
-                    ))}
-                  </div>
+                  <h2 className="text-lg font-semibold tracking-tight text-[#141413]">Targeting Matrix & Discovery Pools</h2>
+                  <p className="text-sm text-[#71716B] mt-0.5">
+                    Configure your geographic and industrial discovery matrix. Minimum 3 industries and 3 cities required.
+                  </p>
                 </div>
-
-                <div>
-                  <h3 className="text-sm font-medium text-zinc-700 mb-3">US Cities ({selectedCities.length} selected)</h3>
-                  <div className="space-y-2 max-h-60 overflow-y-auto p-2 border border-zinc-200 rounded-md">
-                    {defaultCities.map((city) => (
-                      <label key={city} className="flex items-center gap-2 text-sm cursor-pointer hover:bg-zinc-50 p-1 rounded">
-                        <input
-                          type="checkbox"
-                          checked={selectedCities.includes(city)}
-                          onChange={() => handleToggleCity(city)}
-                          className="rounded border-zinc-300 text-zinc-900 focus:ring-zinc-900"
-                        />
-                        {city}
-                      </label>
-                    ))}
+                <div className="bg-[#F5F5F0] px-3.5 py-2 rounded-lg border border-[#E0E0D8] text-right">
+                  <div className="text-[10px] font-mono uppercase tracking-wider text-[#71716B]">Active Combinations</div>
+                  <div className="text-base font-mono font-semibold text-[#141413]">
+                    {selectedIndustries.length} × {selectedCities.length} = {selectedIndustries.length * selectedCities.length} pools
                   </div>
                 </div>
               </div>
 
-              <div className="flex justify-between items-center pt-4 border-t border-zinc-100">
-                <p className="text-xs text-zinc-500">
-                  Active search pools generated: {selectedIndustries.length} × {selectedCities.length} ={' '}
-                  {selectedIndustries.length * selectedCities.length} combinations
-                </p>
+              {targetingError && (
+                <div className="mb-6 p-4 bg-rose-50 border border-rose-200 text-rose-800 text-sm rounded-lg flex items-center gap-3">
+                  <svg className="w-5 h-5 text-rose-600 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                  </svg>
+                  <span>{targetingError}</span>
+                </div>
+              )}
+              {targetingSuccess && (
+                <div className="mb-6 p-4 bg-emerald-50 border border-emerald-200 text-emerald-800 text-sm rounded-lg flex items-center gap-3">
+                  <svg className="w-5 h-5 text-emerald-600 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                  </svg>
+                  <span>{targetingSuccess}</span>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-6">
+                <div className="space-y-3">
+                  <div className="flex justify-between items-center">
+                    <h3 className="text-xs font-mono uppercase tracking-widest text-[#71716B]">Industries ({selectedIndustries.length} selected)</h3>
+                    <span className="text-[11px] text-[#8C8C85]">Min 3 required</span>
+                  </div>
+                  <div className="space-y-1.5 max-h-72 overflow-y-auto p-3 bg-[#FAFAF7] border border-[#E6E6DF] rounded-xl">
+                    {defaultIndustries.map((ind) => {
+                      const isSelected = selectedIndustries.includes(ind)
+                      return (
+                        <label
+                          key={ind}
+                          className={`flex items-center gap-3 text-sm cursor-pointer p-2 rounded-lg transition-colors ${
+                            isSelected ? 'bg-white shadow-xs border border-[#D9D9D3] font-medium text-[#141413]' : 'hover:bg-[#F0F0EC] text-[#595955]'
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={() => handleToggleIndustry(ind)}
+                            className="w-4 h-4 rounded border-[#D9D9D3] text-[#141413] focus:ring-[#141413]"
+                          />
+                          <span>{ind}</span>
+                        </label>
+                      )
+                    })}
+                  </div>
+                </div>
+
+                <div className="space-y-3">
+                  <div className="flex justify-between items-center">
+                    <h3 className="text-xs font-mono uppercase tracking-widest text-[#71716B]">US Target Cities ({selectedCities.length} selected)</h3>
+                    <span className="text-[11px] text-[#8C8C85]">Min 3 required</span>
+                  </div>
+                  <div className="space-y-1.5 max-h-72 overflow-y-auto p-3 bg-[#FAFAF7] border border-[#E6E6DF] rounded-xl">
+                    {defaultCities.map((city) => {
+                      const isSelected = selectedCities.includes(city)
+                      return (
+                        <label
+                          key={city}
+                          className={`flex items-center gap-3 text-sm cursor-pointer p-2 rounded-lg transition-colors ${
+                            isSelected ? 'bg-white shadow-xs border border-[#D9D9D3] font-medium text-[#141413]' : 'hover:bg-[#F0F0EC] text-[#595955]'
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={() => handleToggleCity(city)}
+                            className="w-4 h-4 rounded border-[#D9D9D3] text-[#141413] focus:ring-[#141413]"
+                          />
+                          <span>{city}</span>
+                        </label>
+                      )
+                    })}
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex justify-end pt-5 border-t border-[#E6E6DF]">
                 <button
                   onClick={handleSaveTargeting}
                   disabled={targetingLoading}
-                  className="px-4 py-2 bg-zinc-900 text-white text-sm font-medium rounded-md hover:bg-zinc-800 disabled:opacity-50"
+                  className="px-5 py-2.5 bg-[#141413] text-white text-sm font-medium rounded-xl hover:bg-[#2E2E2A] transition-all disabled:opacity-50 shadow-sm flex items-center gap-2"
                 >
-                  {targetingLoading ? 'Saving...' : 'Save Targeting Grid'}
+                  {targetingLoading ? (
+                    <>
+                      <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                      <span>Updating Matrix...</span>
+                    </>
+                  ) : (
+                    <span>Save Targeting Matrix</span>
+                  )}
                 </button>
               </div>
             </div>
 
             {/* Add Custom Niche Form */}
-            <div className="bg-white p-6 rounded-lg border border-zinc-200 shadow-sm">
-              <h2 className="text-lg font-semibold mb-2">Add Custom Niche</h2>
-              <p className="text-sm text-zinc-500 mb-4">Add a specific custom niche and city pair to your discovery pipeline.</p>
-              <form onSubmit={handleAddCustomNiche} className="flex flex-col sm:flex-row gap-4">
+            <div className="bg-white p-6 sm:p-8 rounded-xl border border-[#E6E6DF] shadow-[0_1px_3px_rgba(0,0,0,0.02)]">
+              <h2 className="text-lg font-semibold tracking-tight text-[#141413] mb-1">Add Custom Discovery Niche</h2>
+              <p className="text-sm text-[#71716B] mb-5">Inject a specialized industry & location pair directly into the autonomous discovery runner.</p>
+              <form onSubmit={handleAddCustomNiche} className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <input
                   type="text"
-                  placeholder="Industry label (e.g. Dental Clinic)"
+                  placeholder="Industry label (e.g. Boutique Gym)"
                   value={customLabel}
                   onChange={(e) => setCustomLabel(e.target.value)}
                   required
-                  className="flex-1 px-3 py-2 text-sm border border-zinc-300 rounded-md focus:outline-none focus:ring-1 focus:ring-zinc-900"
+                  className="px-3.5 py-2.5 text-sm bg-white border border-[#D9D9D3] rounded-xl focus:outline-none focus:ring-2 focus:ring-[#141413]/20 focus:border-[#141413]"
                 />
                 <input
                   type="text"
-                  placeholder="City (e.g. Nashville, TN)"
+                  placeholder="City (e.g. Austin, TX)"
                   value={customCity}
                   onChange={(e) => setCustomCity(e.target.value)}
                   required
-                  className="flex-1 px-3 py-2 text-sm border border-zinc-300 rounded-md focus:outline-none focus:ring-1 focus:ring-zinc-900"
+                  className="px-3.5 py-2.5 text-sm bg-white border border-[#D9D9D3] rounded-xl focus:outline-none focus:ring-2 focus:ring-[#141413]/20 focus:border-[#141413]"
                 />
                 <button
                   type="submit"
                   disabled={customLoading}
-                  className="px-4 py-2 bg-zinc-900 text-white text-sm font-medium rounded-md hover:bg-zinc-800 disabled:opacity-50"
+                  className="px-5 py-2.5 bg-[#141413] text-white text-sm font-medium rounded-xl hover:bg-[#2E2E2A] transition-all disabled:opacity-50 shadow-sm"
                 >
-                  {customLoading ? 'Adding...' : 'Add Niche'}
+                  {customLoading ? 'Adding Niche...' : 'Add Custom Niche'}
                 </button>
               </form>
             </div>
 
             {/* Existing Niches Table */}
-            <div className="bg-white rounded-lg border border-zinc-200 shadow-sm overflow-hidden">
-              <div className="p-4 border-b border-zinc-200">
-                <h2 className="text-lg font-semibold">All Niches ({initialNiches.length})</h2>
+            <div className="bg-white rounded-xl border border-[#E6E6DF] shadow-[0_1px_3px_rgba(0,0,0,0.02)] overflow-hidden">
+              <div className="p-5 border-b border-[#E6E6DF] bg-[#FAFAF7]">
+                <h2 className="text-base font-semibold tracking-tight text-[#141413]">All Registered Niches ({initialNiches.length})</h2>
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-sm">
-                  <thead className="bg-zinc-50 border-b border-zinc-200 text-zinc-500 font-medium">
+                  <thead className="bg-[#F5F5F0] border-b border-[#E6E6DF] text-[#6B6B65] font-mono text-xs uppercase tracking-wider">
                     <tr>
-                      <th className="px-6 py-3">Label</th>
-                      <th className="px-6 py-3">City</th>
-                      <th className="px-6 py-3">Status</th>
-                      <th className="px-6 py-3">Source</th>
-                      <th className="px-6 py-3">Reasoning</th>
+                      <th className="px-6 py-3.5 font-medium">Industry Label</th>
+                      <th className="px-6 py-3.5 font-medium">City Target</th>
+                      <th className="px-6 py-3.5 font-medium">Status</th>
+                      <th className="px-6 py-3.5 font-medium">Source Origin</th>
+                      <th className="px-6 py-3.5 font-medium">AI Reasoning</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-zinc-200">
+                  <tbody className="divide-y divide-[#EFEFED]">
                     {initialNiches.map((niche) => (
-                      <tr key={niche.id} className="hover:bg-zinc-50">
-                        <td className="px-6 py-4 font-medium text-zinc-900">{niche.label}</td>
-                        <td className="px-6 py-4 text-zinc-600">{niche.city}</td>
+                      <tr key={niche.id} className="hover:bg-[#FCFCFA] transition-colors">
+                        <td className="px-6 py-4 font-medium text-[#141413]">{niche.label}</td>
+                        <td className="px-6 py-4 text-[#595955]">{niche.city}</td>
                         <td className="px-6 py-4">
                           <span
-                            className={`inline-flex px-2 py-0.5 rounded text-xs font-medium capitalize ${
+                            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium capitalize border ${
                               niche.status === 'active'
-                                ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                                : 'bg-zinc-100 text-zinc-600'
+                                ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                                : 'bg-[#F0F0EC] text-[#595955] border-[#D9D9D3]'
                             }`}
                           >
+                            <span className={`w-1.5 h-1.5 rounded-full ${niche.status === 'active' ? 'bg-emerald-600' : 'bg-[#8C8C85]'}`} />
                             {niche.status}
                           </span>
                         </td>
-                        <td className="px-6 py-4 text-zinc-600 capitalize">{niche.source.replace('_', ' ')}</td>
-                        <td className="px-6 py-4 text-zinc-500 text-xs">{niche.reasoning || '-'}</td>
+                        <td className="px-6 py-4 text-[#595955] font-mono text-xs capitalize">{niche.source.replace('_', ' ')}</td>
+                        <td className="px-6 py-4 text-[#71716B] text-xs max-w-md truncate">{niche.reasoning || '—'}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -551,34 +659,34 @@ export default function DashboardClient({
 
         {/* Tab 3: Settings */}
         {activeTab === 'settings' && (
-          <div className="bg-white p-6 rounded-lg border border-zinc-200 shadow-sm max-w-2xl">
-            <h2 className="text-lg font-semibold mb-2">Pipeline Settings</h2>
-            <p className="text-sm text-zinc-500 mb-6">Manage global automation limits and pause switches.</p>
+          <div className="bg-white p-6 sm:p-8 rounded-xl border border-[#E6E6DF] shadow-[0_1px_3px_rgba(0,0,0,0.02)] max-w-2xl">
+            <h2 className="text-lg font-semibold tracking-tight text-[#141413] mb-1">Pipeline Global Settings</h2>
+            <p className="text-sm text-[#71716B] mb-6">Manage automated delivery volume caps and emergency pause switches.</p>
 
             {settingsMessage && (
-              <div className="mb-4 p-3 bg-zinc-100 border border-zinc-200 text-zinc-800 text-sm rounded-md">
+              <div className="mb-6 p-4 bg-[#F2F2EE] border border-[#D9D9D3] text-[#141413] text-sm rounded-xl font-medium">
                 {settingsMessage}
               </div>
             )}
 
             <form onSubmit={handleUpdateSettings} className="space-y-6">
               <div>
-                <label className="block text-sm font-medium text-zinc-700 mb-1">Daily Send Cap</label>
+                <label className="block text-xs font-mono uppercase tracking-widest text-[#71716B] mb-2">Daily Send Capacity Cap</label>
                 <input
                   type="number"
                   min="1"
                   max="100"
                   value={dailyCap}
                   onChange={(e) => setDailyCap(parseInt(e.target.value, 10) || 1)}
-                  className="w-full px-3 py-2 text-sm border border-zinc-300 rounded-md focus:outline-none focus:ring-1 focus:ring-zinc-900"
+                  className="w-full px-3.5 py-2.5 text-sm bg-white border border-[#D9D9D3] rounded-xl focus:outline-none focus:ring-2 focus:ring-[#141413]/20 focus:border-[#141413]"
                 />
-                <p className="text-xs text-zinc-500 mt-1">Hard-capped under Resend's 100/day free ceiling.</p>
+                <p className="text-xs text-[#8C8C85] mt-1.5">Strictly hard-capped under Resend's 100/day free tier ceiling.</p>
               </div>
 
-              <div className="flex items-center justify-between p-4 bg-zinc-50 rounded-lg border border-zinc-200">
+              <div className="flex items-center justify-between p-5 bg-[#FAFAF7] rounded-xl border border-[#E6E6DF]">
                 <div>
-                  <span className="block text-sm font-medium text-zinc-900">Pause All Sending</span>
-                  <span className="block text-xs text-zinc-500">Halts all automated email sending immediately.</span>
+                  <span className="block text-sm font-semibold text-[#141413]">Emergency Pause All Sending</span>
+                  <span className="block text-xs text-[#71716B] mt-0.5">Instantly halts outgoing emails across all scheduled tasks.</span>
                 </div>
                 <label className="relative inline-flex items-center cursor-pointer">
                   <input
@@ -587,17 +695,24 @@ export default function DashboardClient({
                     onChange={(e) => setPaused(e.target.checked)}
                     className="sr-only peer"
                   />
-                  <div className="w-11 h-6 bg-zinc-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-zinc-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-zinc-900"></div>
+                  <div className="w-11 h-6 bg-[#D9D9D3] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-[#CCCCCC] after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#141413]" />
                 </label>
               </div>
 
-              <div className="pt-4 border-t border-zinc-100 flex justify-end">
+              <div className="pt-5 border-t border-[#E6E6DF] flex justify-end">
                 <button
                   type="submit"
                   disabled={settingsLoading}
-                  className="px-4 py-2 bg-zinc-900 text-white text-sm font-medium rounded-md hover:bg-zinc-800 disabled:opacity-50"
+                  className="px-5 py-2.5 bg-[#141413] text-white text-sm font-medium rounded-xl hover:bg-[#2E2E2A] transition-all disabled:opacity-50 shadow-sm flex items-center gap-2"
                 >
-                  {settingsLoading ? 'Saving...' : 'Save Settings'}
+                  {settingsLoading ? (
+                    <>
+                      <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                      <span>Saving Settings...</span>
+                    </>
+                  ) : (
+                    <span>Save Settings</span>
+                  )}
                 </button>
               </div>
             </form>
