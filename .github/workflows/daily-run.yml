@@ -1,0 +1,14 @@
+name: Daily Outreach Run
+on:
+  schedule:
+    - cron: '0 13 * * *'  # 13:00 UTC daily
+  workflow_dispatch: {}     # lets you trigger it manually from GitHub's Actions tab too
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call pipeline endpoint
+        run: |
+          curl -f -X GET "${{ secrets.APP_URL }}/api/run-pipeline" \
+            -H "x-cron-secret: ${{ secrets.CRON_SECRET }}"
