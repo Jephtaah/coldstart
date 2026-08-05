@@ -18,7 +18,7 @@ No manual review step in the loop. Jephtah checks in on a dashboard when he want
 
 ## 3. Non-goals (v1)
 
-- No multi-user auth / login system (single operator, lightweight passcode gate only)
+- No multi-user auth, login forms, or passcode UI (single operator, secret key URL/header gate only)
 - No reply detection or inbox parsing (replies go to his normal inbox, untouched)
 - No opt-out/unsubscribe handling (deliberately left out — see decisions below)
 - No CRM-style deal tracking / pipeline stages
@@ -28,7 +28,7 @@ No manual review step in the loop. Jephtah checks in on a dashboard when he want
 
 | Decision | Answer |
 |---|---|
-| Access control | No real auth. Single shared passcode gate in front of the dashboard (env var, one cookie). Not a login system — just a lock on the door, since the app lives on a public URL. |
+| Access control | No auth/login forms or passcode page. Secret key access control (env var `APP_SECRET`, checked via URL query `?key=` or header `x-api-key`). Middleware verifies the key, sets a session cookie for sub-pages, and blocks unauthorized requests. |
 | Send mode | Fully autonomous send, no per-email approval. Guardrails instead of a human checkpoint. |
 | Niche targeting | Fixed seed list to start; the app proposes and adds new niches/cities on its own once a niche's leads are exhausted. |
 | Email sending | Resend, free tier (3,000/mo, 100/day), against a newly purchased domain (~$10-12/yr). Gmail/no-domain sending rejected — sandbox restrictions and personal-account ban risk. |
@@ -53,7 +53,7 @@ No manual review step in the loop. Jephtah checks in on a dashboard when he want
 
 ## 6. Architecture (high level)
 
-- **Frontend/dashboard**: Next.js (App Router, TypeScript, Tailwind) — a simple internal tool, passcode-gated.
+- **Frontend/dashboard**: Next.js (App Router, TypeScript, Tailwind) — a simple internal tool, secret-key gated.
 - **Database**: Neon (serverless Postgres) — 3 tables: `niches`, `leads`, `settings`. Plain `pg` for queries, no ORM, no vendor-specific client — Neon is being used purely as hosted Postgres.
 - **Scraping & email extraction**: server-side fetch + text extraction from the business's own website (homepage + `/contact` + `/about` if linked), plus regex-based email extraction and `mailto:` link parsing. When scraping businesses with websites, any extracted site email is cross-matched against Google Places email data. Businesses without a website are inserted if Google Places provides contact info, using the business name + address as personalization context.
 - **AI generation**: DeepSeek API call, using custom prompt logic that branches based on website presence (pitching site modifications & SEO optimization vs. building a new website from scratch), behind one swappable function.

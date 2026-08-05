@@ -34,7 +34,7 @@ DEEPSEEK_API_KEY=
 DATABASE_URL=your-neon-pooled-connection-string
 SENDER_DOMAIN=yourdomain.com
 REPLY_TO_EMAIL=okeziejephtah@gmail.com
-DASHBOARD_PASSCODE=choose-a-password
+APP_SECRET=choose-a-secret-key
 CRON_SECRET=generate-a-random-string
 ```
 
@@ -288,20 +288,20 @@ Add `CRON_SECRET` to your GitHub repo's secrets (Settings → Secrets and variab
 
 ---
 
-## M9 — Dashboard
+## M9 — Dashboard & Access Control
 
-**Objective:** a passcode-gated page where you can see leads, niches, and settings without opening the database directly.
+**Objective:** a secret-key protected dashboard where you can see leads, niches, and settings without opening the database directly or building login/passcode UI.
 
 **What it needs:**
-- A simple passcode gate: one page asking for a password, checked against `DASHBOARD_PASSCODE`, sets a cookie on success. Middleware checks that cookie on every other route and redirects to the passcode page if missing.
+- Middleware access control: no login forms or passcode pages. If a request includes `?key=YOUR_APP_SECRET` matching `process.env.APP_SECRET`, set an `httpOnly` session cookie named `authed=true` so internal page navigation stays unlocked. If a request lacks both the secret key and valid cookie, return a 404 response.
 - A leads table: business name, status, sent/opened timestamps, filterable by status.
 - A niches view: list with status, and a way to manually add a new one.
 - A settings panel: edit `daily_cap`, toggle `paused`.
 
 **AI prompt to paste:**
-> Write a simple passcode gate for a Next.js App Router app. Create `app/login/page.tsx` with a password input that posts to `app/api/login/route.ts`; that route checks the submitted password against `process.env.DASHBOARD_PASSCODE` and, if correct, sets an httpOnly cookie named `authed` with value `true`. Create `middleware.ts` that checks for that cookie on every route except `/login` and `/api/login`, redirecting to `/login` if it's missing. Then write `app/page.tsx` as a Server Component dashboard that queries the Postgres pool (`pool` from `lib/db.ts`) directly: fetch and display all rows from the `leads` table (business_name, status, initial_sent_at, initial_opened_at, followup_sent_at) in a table, with a simple dropdown to filter by status. Add a section showing all `niches` rows with a form (posting to a small API route that runs a parameterized `INSERT`) to add a new one (label + city inputs, inserts into the niches table with status 'active' and source 'seed'). Add a settings section showing the current `daily_cap` and `paused` value from the settings table, with an input to change daily_cap and a toggle for paused, saving via another small API route that runs a parameterized `UPDATE`. Use Tailwind for basic styling, keep it functional and plain, no need for anything fancy.
+> Create `middleware.ts` for a Next.js App Router app to protect all routes without any passcode page or login UI. Check if the URL query parameter `key` matches `process.env.APP_SECRET` or if an `authed` cookie exists with value `true`. If valid via `?key=`, set an `httpOnly` `authed=true` cookie on the response so sub-pages stay unlocked. If neither is valid, return a 404 response. Then write `app/page.tsx` as a Server Component dashboard that queries the Postgres pool (`pool` from `lib/db.ts`) directly: fetch and display all rows from the `leads` table (business_name, status, initial_sent_at, initial_opened_at, followup_sent_at) in a table, with a simple dropdown to filter by status. Add a section showing all `niches` rows with a form (posting to a small API route that runs a parameterized `INSERT`) to add a new one (label + city inputs, inserts into the niches table with status 'active' and source 'seed'). Add a settings section showing the current `daily_cap` and `paused` value from the settings table, with an input to change daily_cap and a toggle for paused, saving via another small API route that runs a parameterized `UPDATE`. Use Tailwind for basic styling, keep it functional and plain, no need for anything fancy.
 
-**Acceptance test:** you can log in with your passcode, see real data from all three tables, change the daily cap, and toggle pause — and confirm pause actually stops `sendBatch()` on the next pipeline run.
+**Acceptance test:** accessing `http://localhost:3000/` returns 404, accessing `http://localhost:3000/?key=YOUR_SECRET` grants access to the dashboard and sets the session cookie, and you can see real data from all three tables, change the daily cap, and toggle pause — and confirm pause actually stops `sendBatch()` on the next pipeline run.
 
 ---
 
