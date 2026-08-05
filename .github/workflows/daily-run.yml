@@ -10,5 +10,4 @@ jobs:
     steps:
       - name: Call pipeline endpoint
         run: |
-          curl -f -X GET "${{ secrets.APP_URL }}/api/run-pipeline" \
-            -H "x-cron-secret: ${{ secrets.CRON_SECRET }}"
+          curl -f -X GET "${{ secrets.APP_URL }}/api/run-pipeline"

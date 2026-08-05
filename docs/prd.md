@@ -18,7 +18,7 @@ No manual review step in the loop. Jephtah checks in on a dashboard when he want
 
 ## 3. Non-goals (v1)
 
-- No multi-user auth, login forms, or passcode UI (single operator, secret key URL/header gate only)
+- No multi-user auth, login forms, or passcode UI (single operator)
 - No reply detection or inbox parsing (replies go to his normal inbox, untouched)
 - No opt-out/unsubscribe handling (deliberately left out — see decisions below)
 - No CRM-style deal tracking / pipeline stages
@@ -28,7 +28,7 @@ No manual review step in the loop. Jephtah checks in on a dashboard when he want
 
 | Decision | Answer |
 |---|---|
-| Access control | No auth/login forms or passcode page. Secret key access control (env var `APP_SECRET`, checked via URL query `?key=` or header `x-api-key`). Middleware verifies the key, sets a session cookie for sub-pages, and blocks unauthorized requests. |
+| Access control | No auth, login forms, passcodes, or access keys. Any request to the dashboard or endpoints is allowed. |
 | Send mode | Fully autonomous send, no per-email approval. Guardrails instead of a human checkpoint. |
 | Niche targeting | Preset catalog of US cities & industries with multi-select controls (minimum 3 of each selected, defaulting to 3 default industries × 3 default cities = 9 initial active search pools). Auto-expansion proposes and adds new niche/city combinations once existing targets are exhausted. |
 | Email sending | Resend, free tier (3,000/mo, 100/day), against a newly purchased domain (~$10-12/yr). Gmail/no-domain sending rejected — sandbox restrictions and personal-account ban risk. |
@@ -41,7 +41,7 @@ No manual review step in the loop. Jephtah checks in on a dashboard when he want
 | Email sourcing | Businesses with websites: scrape site (homepage, `/contact`, `/about`, footer) using regex + `mailto:` link extraction and cross-match/validate with email from Google Places if available (prefer website email). Businesses without websites: source email/contact info directly from Google Places details. Leads with no discoverable email are marked `failed` before generation. |
 | Offer positioning | Differentiated cold outreach angle based on site status: Businesses without a website receive a pitch for a **new website build** to capture local leads. Businesses with an existing website receive a pitch for **website redesign/modifications & SEO optimization** to rank higher on Google Search & Maps. |
 | Business discovery | Google Places API (Text Search — New). Has a real per-call cost, offset by Google's monthly free credit at this volume — the one line item worth watching in Google Cloud billing. |
-| Automation trigger | A scheduled job (GitHub Actions, free) calls one protected URL on your app daily. No server needs to run 24/7. |
+| Automation trigger | A scheduled job (GitHub Actions, free) calls one URL on your app daily. No server needs to run 24/7. |
 
 ## 5. Guardrails (v1)
 
@@ -54,12 +54,12 @@ No manual review step in the loop. Jephtah checks in on a dashboard when he want
 
 ## 6. Architecture (high level)
 
-- **Frontend/dashboard**: Next.js (App Router, TypeScript, Tailwind) — a simple internal tool, secret-key gated.
+- **Frontend/dashboard**: Next.js (App Router, TypeScript, Tailwind) — a simple internal tool.
 - **Database**: Neon (serverless Postgres) — 3 tables: `niches`, `leads`, `settings`. Plain `pg` for queries, no ORM, no vendor-specific client — Neon is being used purely as hosted Postgres.
 - **Scraping & email extraction**: server-side fetch + text extraction from the business's own website (homepage + `/contact` + `/about` if linked), plus regex-based email extraction and `mailto:` link parsing. When scraping businesses with websites, any extracted site email is cross-matched against Google Places email data. Businesses without a website are inserted if Google Places provides contact info, using the business name + address as personalization context.
 - **AI generation**: DeepSeek API call, using custom prompt logic that branches based on website presence (pitching site modifications & SEO optimization vs. building a new website from scratch), behind one swappable function.
 - **Sending**: Resend API, domain verified, tracking enabled.
-- **Automation trigger**: GitHub Actions cron calling a protected endpoint on a schedule.
+- **Automation trigger**: GitHub Actions cron calling an endpoint on a schedule.
 - **Webhook**: one endpoint to receive Resend's open-tracking events and write them to the DB.
 
 ## 7. Data model

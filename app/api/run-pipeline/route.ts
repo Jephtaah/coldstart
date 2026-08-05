@@ -17,14 +17,7 @@ interface StageResult {
   error?: string
 }
 
-export async function GET(request: Request) {
-  const cronSecret = process.env.CRON_SECRET
-  const authHeader = request.headers.get('x-cron-secret')
-
-  if (!cronSecret || authHeader !== cronSecret) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
-
+export async function GET() {
   const results: Record<string, StageResult> = {}
 
   // Stage 1: Discovery

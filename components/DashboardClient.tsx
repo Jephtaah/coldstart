@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useSyncExternalStore } from 'react'
 import { useRouter } from 'next/navigation'
 
 interface Lead {
@@ -58,6 +58,11 @@ export default function DashboardClient({
   defaultCities,
 }: DashboardClientProps) {
   const router = useRouter()
+  const mounted = useSyncExternalStore(
+    () => () => {},
+    () => true,
+    () => false
+  )
   const [activeTab, setActiveTab] = useState<'leads' | 'targeting' | 'settings'>('leads')
 
   // Leads state
@@ -240,7 +245,7 @@ export default function DashboardClient({
             </div>
             <span className="text-[#D0D0C8]">|</span>
             <span className="text-xs text-[#6B6B65] font-mono">
-              Sync: {initialSettings.last_run_at ? new Date(initialSettings.last_run_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Never'}
+              Sync: {!initialSettings.last_run_at ? 'Never' : mounted ? new Date(initialSettings.last_run_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '…'}
             </span>
           </div>
         </div>
@@ -444,10 +449,10 @@ export default function DashboardClient({
                           {lead.email || <span className="text-[#A3A39E] italic font-sans">No email found</span>}
                         </td>
                         <td className="px-6 py-4 font-mono text-xs text-[#71716B]">
-                          {lead.initial_sent_at ? new Date(lead.initial_sent_at).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }) : '—'}
+                          {lead.initial_sent_at ? (mounted ? new Date(lead.initial_sent_at).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }) : '…') : '—'}
                           {lead.followup_sent_at && (
                             <div className="text-[10px] text-[#A3A39E] mt-0.5">
-                              FU: {new Date(lead.followup_sent_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                              FU: {mounted ? new Date(lead.followup_sent_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '…'}
                             </div>
                           )}
                         </td>
