@@ -133,11 +133,18 @@ create table settings (
 insert into settings (id, daily_cap, paused) values (1, 25, false);
 ```
 
-Then seed your starting niches — edit the list to your real targets:
+Then seed your starting niches — 3 default industries × 3 default cities (9 active search pools):
 ```sql
 insert into niches (label, city, status, source) values
   ('garage door repair', 'Dallas, TX', 'active', 'seed'),
-  ('chiropractor', 'Dallas, TX', 'active', 'seed');
+  ('garage door repair', 'Austin, TX', 'active', 'seed'),
+  ('garage door repair', 'Miami, FL', 'active', 'seed'),
+  ('chiropractor', 'Dallas, TX', 'active', 'seed'),
+  ('chiropractor', 'Austin, TX', 'active', 'seed'),
+  ('chiropractor', 'Miami, FL', 'active', 'seed'),
+  ('roofing contractor', 'Dallas, TX', 'active', 'seed'),
+  ('roofing contractor', 'Austin, TX', 'active', 'seed'),
+  ('roofing contractor', 'Miami, FL', 'active', 'seed');
 ```
 
 **Acceptance test:** `select * from niches;` and `select * from settings;` return the rows above, either in Neon's SQL Editor or its Tables view.
@@ -295,13 +302,13 @@ Add `CRON_SECRET` to your GitHub repo's secrets (Settings → Secrets and variab
 **What it needs:**
 - Middleware access control: no login forms or passcode pages. If a request includes `?key=YOUR_APP_SECRET` matching `process.env.APP_SECRET`, set an `httpOnly` session cookie named `authed=true` so internal page navigation stays unlocked. If a request lacks both the secret key and valid cookie, return a 404 response.
 - A leads table: business name, status, sent/opened timestamps, filterable by status.
-- A niches view: list with status, and a way to manually add a new one.
+- A niches & targeting view: preset catalog of top US cities and industries in `lib/constants.ts`. Multi-select checkboxes for Industries and US Cities (enforcing minimum 3 of each selected at all times). Shows active `niches` combinations (e.g. 3 industries × 3 cities = 9 active search pools), with a form to manually add custom city/industry pairs.
 - A settings panel: edit `daily_cap`, toggle `paused`.
 
 **AI prompt to paste:**
-> Create `middleware.ts` for a Next.js App Router app to protect all routes without any passcode page or login UI. Check if the URL query parameter `key` matches `process.env.APP_SECRET` or if an `authed` cookie exists with value `true`. If valid via `?key=`, set an `httpOnly` `authed=true` cookie on the response so sub-pages stay unlocked. If neither is valid, return a 404 response. Then write `app/page.tsx` as a Server Component dashboard that queries the Postgres pool (`pool` from `lib/db.ts`) directly: fetch and display all rows from the `leads` table (business_name, status, initial_sent_at, initial_opened_at, followup_sent_at) in a table, with a simple dropdown to filter by status. Add a section showing all `niches` rows with a form (posting to a small API route that runs a parameterized `INSERT`) to add a new one (label + city inputs, inserts into the niches table with status 'active' and source 'seed'). Add a settings section showing the current `daily_cap` and `paused` value from the settings table, with an input to change daily_cap and a toggle for paused, saving via another small API route that runs a parameterized `UPDATE`. Use Tailwind for basic styling, keep it functional and plain, no need for anything fancy.
+> Create `middleware.ts` for a Next.js App Router app to protect all routes without any passcode page or login UI. Check if the URL query parameter `key` matches `process.env.APP_SECRET` or if an `authed` cookie exists with value `true`. If valid via `?key=`, set an `httpOnly` `authed=true` cookie on the response so sub-pages stay unlocked. If neither is valid, return a 404 response. Define `lib/constants.ts` with lists of top US service industries (e.g. Garage Door Repair, Chiropractor, Roofing Contractor, Plumbing, HVAC) and top US cities (e.g. Dallas, TX; Austin, TX; Miami, FL; Houston, TX; Phoenix, AZ). Then write `app/page.tsx` as a Server Component dashboard querying Postgres (`pool` from `lib/db.ts`): fetch and display all rows from `leads` table in a table filterable by status. Add a Targeting section displaying current active `niches` rows alongside multi-select checkboxes for preset Industries and US Cities (enforcing a minimum selection of 3 industries and 3 cities; saving updates/inserts combination rows into `niches` with status 'active'). Also include a form to add custom niche/city pairs. Add a settings section showing `daily_cap` and `paused`, with an input to update `daily_cap` and a toggle for `paused` via a small API route. Use Tailwind CSS for clean styling.
 
-**Acceptance test:** accessing `http://localhost:3000/` returns 404, accessing `http://localhost:3000/?key=YOUR_SECRET` grants access to the dashboard and sets the session cookie, and you can see real data from all three tables, change the daily cap, and toggle pause — and confirm pause actually stops `sendBatch()` on the next pipeline run.
+**Acceptance test:** accessing `http://localhost:3000/` returns 404, accessing `http://localhost:3000/?key=YOUR_SECRET` grants access to the dashboard and sets the session cookie, and you can see real data, toggle target cities/industries (enforcing min 3 of each), change daily cap, and toggle pause.
 
 ---
 

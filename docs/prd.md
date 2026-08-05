@@ -30,7 +30,7 @@ No manual review step in the loop. Jephtah checks in on a dashboard when he want
 |---|---|
 | Access control | No auth/login forms or passcode page. Secret key access control (env var `APP_SECRET`, checked via URL query `?key=` or header `x-api-key`). Middleware verifies the key, sets a session cookie for sub-pages, and blocks unauthorized requests. |
 | Send mode | Fully autonomous send, no per-email approval. Guardrails instead of a human checkpoint. |
-| Niche targeting | Fixed seed list to start; the app proposes and adds new niches/cities on its own once a niche's leads are exhausted. |
+| Niche targeting | Preset catalog of US cities & industries with multi-select controls (minimum 3 of each selected, defaulting to 3 default industries × 3 default cities = 9 initial active search pools). Auto-expansion proposes and adds new niche/city combinations once existing targets are exhausted. |
 | Email sending | Resend, free tier (3,000/mo, 100/day), against a newly purchased domain (~$10-12/yr). Gmail/no-domain sending rejected — sandbox restrictions and personal-account ban risk. |
 | Open tracking | Included — Resend's pixel + webhook. |
 | Reply tracking | Not built. Replies just show up in his normal inbox. |
@@ -49,6 +49,7 @@ No manual review step in the loop. Jephtah checks in on a dashboard when he want
 - **Dedup**: never contact the same business twice (checked by domain + place_id before every send).
 - **Follow-up cap**: exactly one follow-up per lead, only once, only 7+ days after the first send.
 - **Pause switch**: one flag in settings that halts all sending immediately.
+- **Targeting guardrail**: minimum 3 active industries and 3 active US cities selected at any point (defaulting to Garage Door Repair, Chiropractor, Roofing Contractor × Dallas TX, Austin TX, Miami FL, giving 9 active search pools).
 - **Style guardrail**: the AI prompt enforces Jephtah's known preferences (no em dashes, no corporate filler, no template-triplet phrasing, one honest specific detail as the opener, no generic "I noticed your website..." lines) and dynamically adjusts the pitch angle depending on whether the business has an existing website or not.
 
 ## 6. Architecture (high level)
