@@ -5,6 +5,7 @@ import { scrapeWebsite } from '@/lib/scraper'
 import { generateEmail } from '@/lib/generator'
 import { sendBatch } from '@/lib/sender'
 import { sendFollowUps } from '@/lib/followup'
+import { expandNiches } from '@/lib/expansion'
 
 export const dynamic = 'force-dynamic'
 
@@ -38,15 +39,34 @@ export async function GET(request: Request) {
       try {
         const count = await discoverBusinesses(niche.label, niche.city, niche.id)
         totalDiscovered += count
+        if (count === 0) {
+          await pool.query('UPDATE niches SET status = $1 WHERE id = $2', ['exhausted', niche.id])
+        }
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err)
         errors.push(`Niche ${niche.label} in ${niche.city}: ${message}`)
       }
     }
 
+    // Check if any active niches remain, if not trigger expandNiches
+    let expandedCount = 0
+    const activeCheck = await pool.query(
+      'SELECT COUNT(*) FROM niches WHERE status = $1',
+      ['active']
+    )
+    if (parseInt(activeCheck.rows[0].count, 10) === 0) {
+      try {
+        expandedCount = await expandNiches()
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err)
+        errors.push(`Niche expansion: ${message}`)
+      }
+    }
+
     results.discovery = {
       success: errors.length === 0,
       count: totalDiscovered,
+      ...(expandedCount > 0 && { expandedCount }),
       ...(errors.length > 0 && { error: errors.join('; ') }),
     }
   } catch (err: unknown) {
