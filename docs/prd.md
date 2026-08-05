@@ -8,6 +8,12 @@ Jephtah runs cold email outreach for his dev agency (garage door repair, chiropr
 
 A single-user, always-running pipeline that:
 1. Finds businesses in a target niche/city
+2. Finds their contact email (scraping their website or from Google Places data) and pulls site content for personalization
+3. Generates a personalized, human-sounding cold email
+4. Sends it automatically, within safe daily limits
+5. Sends one automatic follow-up after 7 days if nothing else happened
+6. Logs everything, and expands into new niches on its own once a niche is exhausted
+1. Finds businesses in a target niche/city
 2. Pulls their site content
 3. Generates a personalized, human-sounding cold email
 4. Sends it automatically, within safe daily limits
@@ -38,6 +44,8 @@ No manual review step in the loop. Jephtah checks in on a dashboard when he want
 | Opt-out language | Deliberately omitted. Note: CAN-SPAM technically covers one-time commercial outreach too (real sender identity, physical address, some opt-out path) — not just newsletters. Not legal advice, and enforcement risk for this scale is low, but it's a conscious tradeoff being made, not an oversight. |
 | Blocklist | Not built — no opt-out mechanism means nothing to check against. Dedup (never email the same business twice) is kept regardless, since that's just avoiding wasted/duplicate sends, unrelated to compliance. |
 | AI provider | DeepSeek (OpenAI-compatible API) for scrape-summarization and email generation, behind one swappable function so another provider can be dropped in later. |
+| Email sourcing | Primary source: scrape the business's own website (homepage, /contact, /about, footer) for email addresses using regex + `mailto:` link extraction. Fallback: capture phone/email from Google Places if provided. Leads without any discoverable email are marked `failed` before generation — no AI cost wasted on uncontactable businesses. |
+| Business discovery | Google Places API (Text Search — New). Has a real per-call cost, offset by Google's monthly free credit at this volume — the one line item worth watching in Google Cloud billing. |
 | Business discovery | Google Places API (Text Search — New). Has a real per-call cost, offset by Google's monthly free credit at this volume — the one line item worth watching in Google Cloud billing. |
 | Automation trigger | A scheduled job (GitHub Actions, free) calls one protected URL on your app daily. No server needs to run 24/7. |
 
@@ -53,7 +61,7 @@ No manual review step in the loop. Jephtah checks in on a dashboard when he want
 
 - **Frontend/dashboard**: Next.js (App Router, TypeScript, Tailwind) — a simple internal tool, passcode-gated.
 - **Database**: Neon (serverless Postgres) — 3 tables: `niches`, `leads`, `settings`. Plain `pg` for queries, no ORM, no vendor-specific client — Neon is being used purely as hosted Postgres.
-- **Scraping**: server-side fetch + text extraction from the business's own website (homepage + about/contact if linked).
+- **Scraping & email extraction**: server-side fetch + text extraction from the business's own website (homepage + /contact + /about if linked), plus regex-based email extraction and `mailto:` link parsing from the same pages. Google Places phone/email is captured at discovery time as a fallback. Businesses without a website are still inserted if Google Places has contact info, using the business name + address as the personalization context instead of scraped site text.
 - **AI generation**: DeepSeek API call, one function boundary so the provider can be swapped later.
 - **Sending**: Resend API, domain verified, tracking enabled.
 - **Automation trigger**: GitHub Actions cron calling a protected endpoint on a schedule.
