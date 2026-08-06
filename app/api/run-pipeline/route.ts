@@ -6,9 +6,15 @@ import { generateEmail } from '@/lib/generator'
 import { sendBatch } from '@/lib/sender'
 import { sendFollowUps } from '@/lib/followup'
 import { expandNiches } from '@/lib/expansion'
+import { MAX_SEO_SCORE_TO_SEND, MAX_INITIAL_SENDS_PER_DAY, MAX_FOLLOWUPS_PER_DAY } from '@/lib/constants'
 import { Resend } from 'resend'
 
 export const dynamic = 'force-dynamic'
+
+const MAX_NICHES_PER_RUN = 5
+const MAX_SCRAPES_PER_RUN = 12
+const MAX_GENERATES_PER_RUN = 8
+const PENDING_LEAD_STATUSES = ['new', 'scraped', 'generated']
 
 interface StageResult {
   success: boolean
@@ -17,21 +23,71 @@ interface StageResult {
   error?: string
 }
 
-export async function GET(request: Request) {
-  const cronSecret = process.env.CRON_SECRET
-  const authHeader = request.headers.get('x-cron-secret')
+interface RemainingCap {
+  initial: number
+  followups: number
+}
 
-  if (!cronSecret || authHeader !== cronSecret) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+async function getRemainingCap(): Promise<RemainingCap> {
+  const settingsResult = await pool.query('SELECT daily_cap, paused FROM settings WHERE id = 1')
+  if (settingsResult.rows.length === 0) {
+    throw new Error('Settings table row with id = 1 not found.')
   }
 
+  const settings = settingsResult.rows[0]
+  if (settings.paused) {
+    return { initial: 0, followups: 0 }
+  }
+
+  const countResult = await pool.query(
+    `SELECT
+       (SELECT COUNT(*) FROM leads WHERE initial_sent_at >= CURRENT_DATE) AS initial,
+       (SELECT COUNT(*) FROM leads WHERE followup_sent_at >= CURRENT_DATE) AS followups`
+  )
+  const initialSentToday = parseInt(countResult.rows[0].initial, 10) || 0
+  const followupsSentToday = parseInt(countResult.rows[0].followups, 10) || 0
+
+  return {
+    initial: Math.min(settings.daily_cap, MAX_INITIAL_SENDS_PER_DAY) - initialSentToday,
+    followups: MAX_FOLLOWUPS_PER_DAY - followupsSentToday,
+  }
+}
+
+export async function GET() {
   const results: Record<string, StageResult> = {}
+
+  // Compute today's remaining send budgets. Initial sends are limited by the
+  // daily capacity cap; follow-ups have their own separate budget. If both are
+  // spent, skip the run so the pipeline waits for the next day.
+  let remaining = Number.MAX_SAFE_INTEGER
+  let remainingFollowups = Number.MAX_SAFE_INTEGER
+  try {
+    const cap = await getRemainingCap()
+    remaining = cap.initial
+    remainingFollowups = cap.followups
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err)
+    results.cap = { success: false, error: message }
+  }
+
+  if (remaining <= 0 && remainingFollowups <= 0) {
+    await pool.query('UPDATE settings SET last_run_at = NOW() WHERE id = 1')
+    return NextResponse.json(
+      {
+        success: true,
+        hasRemaining: false,
+        capReached: true,
+        results: { cap: { success: true, remaining } },
+      },
+      { status: 200 }
+    )
+  }
 
   // Stage 1: Discovery
   try {
     const nichesResult = await pool.query(
-      'SELECT id, label, city FROM niches WHERE status = $1',
-      ['active']
+      'SELECT id, label, city FROM niches WHERE status = $1 LIMIT $2',
+      ['active', MAX_NICHES_PER_RUN]
     )
     let totalDiscovered = 0
     const errors: string[] = []
@@ -41,7 +97,14 @@ export async function GET(request: Request) {
         const count = await discoverBusinesses(niche.label, niche.city, niche.id)
         totalDiscovered += count
         if (count === 0) {
-          await pool.query('UPDATE niches SET status = $1 WHERE id = $2', ['exhausted', niche.id])
+          const pendingResult = await pool.query(
+            `SELECT COUNT(*) FROM leads WHERE niche_id = $1 AND status = ANY($2::text[])`,
+            [niche.id, PENDING_LEAD_STATUSES]
+          )
+          const pendingCount = parseInt(pendingResult.rows[0].count, 10)
+          if (pendingCount === 0) {
+            await pool.query('UPDATE niches SET status = $1 WHERE id = $2', ['exhausted', niche.id])
+          }
         }
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err)
@@ -78,8 +141,8 @@ export async function GET(request: Request) {
   // Stage 2: Scraping
   try {
     const leadsResult = await pool.query(
-      'SELECT id FROM leads WHERE status = $1',
-      ['new']
+      'SELECT id FROM leads WHERE status = $1 ORDER BY seo_score ASC NULLS LAST LIMIT $2',
+      ['new', MAX_SCRAPES_PER_RUN]
     )
     let scrapedCount = 0
     const errors: string[] = []
@@ -104,11 +167,17 @@ export async function GET(request: Request) {
     results.scraping = { success: false, error: message }
   }
 
-  // Stage 3: Generation
+  // Stage 3: Generation (leads scoring at/above the SEO cutoff are skipped first)
   try {
+    const skipResult = await pool.query(
+      `UPDATE leads SET status = 'skipped' WHERE status = ANY($1::text[]) AND seo_score >= $2`,
+      [['scraped', 'generated'], MAX_SEO_SCORE_TO_SEND]
+    )
+    const skippedCount = skipResult.rowCount || 0
+
     const leadsResult = await pool.query(
-      'SELECT id FROM leads WHERE status = $1',
-      ['scraped']
+      'SELECT id FROM leads WHERE status = $1 ORDER BY seo_score ASC NULLS LAST LIMIT $2',
+      ['scraped', MAX_GENERATES_PER_RUN]
     )
     let generatedCount = 0
     const errors: string[] = []
@@ -126,6 +195,7 @@ export async function GET(request: Request) {
     results.generation = {
       success: errors.length === 0,
       processed: generatedCount,
+      ...(skippedCount > 0 && { skipped: skippedCount }),
       ...(errors.length > 0 && { error: errors.join('; ') }),
     }
   } catch (err: unknown) {
@@ -162,8 +232,28 @@ export async function GET(request: Request) {
     results.settings = { success: false, error: message }
   }
 
+  // Determine if more work remains so the caller can loop until done
+  let hasRemaining = false
+  try {
+    const pendingResult = await pool.query(
+      `SELECT
+         (SELECT COUNT(*) FROM leads WHERE status = 'new') AS to_scrape,
+         (SELECT COUNT(*) FROM leads WHERE status = 'scraped') AS to_generate,
+         (SELECT COUNT(*) FROM niches WHERE status = 'active') AS active_niches`
+    )
+    const pending = pendingResult.rows[0]
+    hasRemaining =
+      remaining > 0 &&
+      (parseInt(pending.to_scrape, 10) > 0 ||
+        parseInt(pending.to_generate, 10) > 0 ||
+        parseInt(pending.active_niches, 10) > 0)
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err)
+    results.settings = { success: false, error: message }
+  }
+
   // Check for failures and send alert email if configured
-  const failedStages = Object.entries(results).filter(([_, res]) => !res.success || res.error)
+  const failedStages = Object.entries(results).filter(([, res]) => !res.success || res.error)
   if (failedStages.length > 0 && process.env.RESEND_API_KEY && process.env.REPLY_TO_EMAIL) {
     try {
       const resend = new Resend(process.env.RESEND_API_KEY)
@@ -183,5 +273,5 @@ export async function GET(request: Request) {
     }
   }
 
-  return NextResponse.json({ success: true, results }, { status: 200 })
+  return NextResponse.json({ success: true, hasRemaining, results }, { status: 200 })
 }

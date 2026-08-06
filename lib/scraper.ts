@@ -1,5 +1,6 @@
 import { pool } from './db'
 import * as cheerio from 'cheerio'
+import { scoreSiteSignals, mergeSeoScores, DEFAULT_SEO_SCORE, type SiteSignals } from './seo'
 
 const EMAIL_REGEX = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g
 
@@ -18,7 +19,9 @@ function extractEmails(text: string): string[] {
   )
 }
 
-async function fetchPageTextAndEmails(url: string): Promise<{ text: string; emails: string[] }> {
+async function fetchPageTextAndEmails(
+  url: string
+): Promise<{ text: string; emails: string[]; siteSignals: SiteSignals }> {
   let formattedUrl = url.trim()
   if (!/^https?:\/\//i.test(formattedUrl)) {
     formattedUrl = 'https://' + formattedUrl
@@ -49,8 +52,14 @@ async function fetchPageTextAndEmails(url: string): Promise<{ text: string; emai
     $('a[href^="mailto:"]').each((_, el) => {
       const href = $(el).attr('href')
       if (href) {
-        const emailPart = href.replace(/^mailto:/i, '').split('?')[0].trim()
-        if (emailPart) {
+        const rawPart = href.replace(/^mailto:/i, '').split('?')[0].trim()
+        if (rawPart) {
+          let emailPart = rawPart
+          try {
+            emailPart = decodeURIComponent(rawPart).trim()
+          } catch {
+            // leave the raw value if it is not valid URL-encoding
+          }
           mailtoEmails.push(emailPart)
         }
       }
@@ -64,9 +73,18 @@ async function fetchPageTextAndEmails(url: string): Promise<{ text: string; emai
 
     const allEmails = Array.from(new Set([...mailtoEmails, ...textEmails]))
 
+    const siteSignals: SiteSignals = {
+      title: $('title').first().text().trim(),
+      metaDescription: $('meta[name="description"]').first().attr('content')?.trim() || '',
+      hasViewport: $('meta[name="viewport"]').length > 0,
+      h1Count: $('h1').length,
+      bodyWordCount: bodyText ? bodyText.split(/\s+/).length : 0,
+    }
+
     return {
       text: bodyText.slice(0, 3000),
       emails: allEmails,
+      siteSignals,
     }
   } catch (error) {
     clearTimeout(timeoutId)
@@ -76,7 +94,7 @@ async function fetchPageTextAndEmails(url: string): Promise<{ text: string; emai
 
 export async function scrapeWebsite(leadId: string): Promise<boolean> {
   const result = await pool.query(
-    'SELECT website, email, business_name, address FROM leads WHERE id = $1',
+    'SELECT website, email, business_name, address, place_id, seo_score, seo_flags FROM leads WHERE id = $1',
     [leadId]
   )
 
@@ -89,32 +107,53 @@ export async function scrapeWebsite(leadId: string): Promise<boolean> {
   const existingEmail = lead.email
   const businessName = lead.business_name || 'Unknown Business'
   const address = lead.address || 'Unknown Address'
+  const existingSeoScore = lead.seo_score == null ? DEFAULT_SEO_SCORE : Number(lead.seo_score)
+  const existingSeoFlags: string[] =
+    typeof lead.seo_flags === 'string' && lead.seo_flags.trim() !== ''
+      ? lead.seo_flags.split(',')
+      : []
+
+  async function discardLead() {
+    if (lead.place_id) {
+      await pool.query(
+        `INSERT INTO suppressed_places (place_id) VALUES ($1) ON CONFLICT (place_id) DO NOTHING`,
+        [lead.place_id]
+      )
+    }
+    await pool.query('DELETE FROM leads WHERE id = $1', [leadId])
+  }
 
   if (!website || website.trim() === '') {
-    const scrapedContent = `Business Name: ${businessName}\nAddress: ${address}\nWebsite: None`
-    await pool.query(
-      `UPDATE leads SET scraped_content = $1, status = 'scraped' WHERE id = $2`,
-      [scrapedContent, leadId]
-    )
-    return true
+    await discardLead()
+    return false
   }
 
   try {
-    const { text, emails } = await fetchPageTextAndEmails(website)
+    const { text, emails, siteSignals } = await fetchPageTextAndEmails(website)
     let bestEmail = existingEmail
     if (!bestEmail && emails.length > 0) {
       bestEmail = emails[0]
     }
 
+    if (!bestEmail || bestEmail.trim() === '') {
+      await discardLead()
+      return false
+    }
+
     const scrapedContent = text || `Business Name: ${businessName}\nAddress: ${address}\nWebsite: ${website}`
 
+    const siteScore = scoreSiteSignals(siteSignals)
+    const mergedScore = mergeSeoScores(existingSeoScore, siteScore.score)
+    const combinedFlags = Array.from(
+      new Set([...existingSeoFlags, ...siteScore.flags])
+    ).join(',')
+
     await pool.query(
-      `UPDATE leads SET scraped_content = $1, email = $2, status = 'scraped' WHERE id = $3`,
-      [scrapedContent, bestEmail, leadId]
+      `UPDATE leads SET scraped_content = $1, email = $2, status = 'scraped', seo_score = $3, seo_flags = $4 WHERE id = $5`,
+      [scrapedContent, bestEmail, mergedScore, combinedFlags, leadId]
     )
     return true
   } catch {
-    // If fetching failed
     if (existingEmail) {
       const fallbackContent = `Business Name: ${businessName}\nAddress: ${address}\nWebsite: ${website} (Scrape failed, email retained)`
       await pool.query(
@@ -122,12 +161,8 @@ export async function scrapeWebsite(leadId: string): Promise<boolean> {
         [fallbackContent, leadId]
       )
       return true
-    } else {
-      await pool.query(
-        `UPDATE leads SET status = 'failed' WHERE id = $1`,
-        [leadId]
-      )
-      return false
     }
+    await discardLead()
+    return false
   }
 }

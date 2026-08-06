@@ -34,8 +34,6 @@ DEEPSEEK_API_KEY=
 DATABASE_URL=your-neon-pooled-connection-string
 SENDER_DOMAIN=yourdomain.com
 REPLY_TO_EMAIL=okeziejephtah@gmail.com
-APP_SECRET=choose-a-secret-key
-CRON_SECRET=generate-a-random-string
 ```
 
 Note on the new domain's DNS: you only need the SPF/DKIM (sending) records Resend gives you. No MX records, no mail hosting — replies get routed back to your Gmail via `REPLY_TO_EMAIL` in M6, not by receiving mail on the new domain at all.
@@ -107,7 +105,9 @@ create table leads (
   website text,
   email text,
   place_id text unique,
-  status text not null default 'new', -- 'new' | 'scraped' | 'generated' | 'sent' | 'followed_up' | 'failed'
+  status text not null default 'new', -- 'new' | 'scraped' | 'generated' | 'sent' | 'followed_up' | 'skipped' | 'failed'
+  seo_score int, -- 0 (weakest SEO, top outreach priority) to 100 (strongest); >= 65 is hard-skipped
+  seo_flags text, -- comma-separated weakness flags: no_title, no_meta_description, no_viewport, no_h1, thin_content, low_review_count, deep_result_page_N
   scraped_content text,
   generated_subject text,
   generated_body text,
@@ -124,13 +124,13 @@ create table leads (
 
 create table settings (
   id int primary key default 1,
-  daily_cap int not null default 25,
+  daily_cap int not null default 100,
   paused boolean not null default false,
   last_run_at timestamptz,
   constraint single_row check (id = 1)
 );
 
-insert into settings (id, daily_cap, paused) values (1, 25, false);
+insert into settings (id, daily_cap, paused) values (1, 100, false);
 ```
 
 Then seed your starting niches — 3 default industries × 3 default cities (9 active search pools):
@@ -257,19 +257,18 @@ insert into niches (label, city, status, source) values
 
 ## M8 — Automation trigger (the daily runner)
 
-**Objective:** one protected endpoint that runs the full loop, called automatically every day.
+**Objective:** one endpoint that runs the full loop, called automatically every day.
 
 **What the endpoint should do, in order:**
-1. Check a secret header matches `CRON_SECRET` — reject with 401 if not.
-2. For each `niche` with `status = 'active'`: run discovery (M3) for it.
-3. For all leads with `status = 'new'`: scrape (M4).
-4. For all leads with `status = 'scraped'`: generate (M5).
-5. Run `sendBatch()` (M6).
-6. Run `sendFollowUps()` (M7).
-7. Update `settings.last_run_at` to now.
+1. For each `niche` with `status = 'active'`: run discovery (M3) for it.
+2. For all leads with `status = 'new'`: scrape (M4).
+3. For all leads with `status = 'scraped'`: generate (M5).
+4. Run `sendBatch()` (M6).
+5. Run `sendFollowUps()` (M7).
+6. Update `settings.last_run_at` to now.
 
 **AI prompt to paste:**
-> Write a Next.js App Router API route at `app/api/run-pipeline/route.ts` with a `GET` handler. It should first check that the request header `x-cron-secret` matches `process.env.CRON_SECRET`, returning a 401 response if not. Then, in order: fetch all niches with `status = 'active'` and call a `discoverBusinesses(label, city)` function for each; fetch all leads with `status = 'new'` and call `scrapeWebsite(id, website)` for each; fetch all leads with `status = 'scraped'` and call `generateEmail(id)` for each; call `sendBatch()`; call `sendFollowUps()`; then update the `settings` table's single row to set `last_run_at` to the current timestamp. Wrap each stage in a try/catch so one stage failing doesn't stop the others from running, and return a JSON summary of what happened at each stage (counts or error messages).
+> Write a Next.js App Router API route at `app/api/run-pipeline/route.ts` with a `GET` handler. In order: fetch all niches with `status = 'active'` and call a `discoverBusinesses(label, city)` function for each; fetch all leads with `status = 'new'` and call `scrapeWebsite(id, website)` for each; fetch all leads with `status = 'scraped'` and call `generateEmail(id)` for each; call `sendBatch()`; call `sendFollowUps()`; then update the `settings` table's single row to set `last_run_at` to the current timestamp. Wrap each stage in a try/catch so one stage failing doesn't stop the others from running, and return a JSON summary of what happened at each stage (counts or error messages).
 
 **Then set up the schedule** — create `.github/workflows/daily-run.yml` in your repo:
 ```yaml
@@ -285,30 +284,26 @@ jobs:
     steps:
       - name: Call pipeline endpoint
         run: |
-          curl -f -X GET "https://your-vercel-url.vercel.app/api/run-pipeline" \
-            -H "x-cron-secret: ${{ secrets.CRON_SECRET }}"
+          curl -f -X GET "https://your-vercel-url.vercel.app/api/run-pipeline"
 ```
-
-Add `CRON_SECRET` to your GitHub repo's secrets (Settings → Secrets and variables → Actions → New repository secret) with the same value as in Vercel.
 
 **Acceptance test:** trigger the workflow manually from GitHub's Actions tab (`workflow_dispatch`) and confirm the pipeline runs end to end without you touching anything else. Then leave the schedule alone for a day and check it fired on its own.
 
 ---
 
-## M9 — Dashboard & Access Control
+## M9 — Dashboard
 
-**Objective:** a secret-key protected dashboard where you can see leads, niches, and settings without opening the database directly or building login/passcode UI.
+**Objective:** a dashboard where you can see leads, niches, and settings without opening the database directly.
 
 **What it needs:**
-- Middleware access control: no login forms or passcode pages. If a request includes `?key=YOUR_APP_SECRET` matching `process.env.APP_SECRET`, set an `httpOnly` session cookie named `authed=true` so internal page navigation stays unlocked. If a request lacks both the secret key and valid cookie, return a 404 response.
 - A leads table: business name, status, sent/opened timestamps, filterable by status.
 - A niches & targeting view: preset catalog of top US cities and industries in `lib/constants.ts`. Multi-select checkboxes for Industries and US Cities (enforcing minimum 3 of each selected at all times). Shows active `niches` combinations (e.g. 3 industries × 3 cities = 9 active search pools), with a form to manually add custom city/industry pairs.
 - A settings panel: edit `daily_cap`, toggle `paused`.
 
 **AI prompt to paste:**
-> Create `middleware.ts` for a Next.js App Router app to protect all routes without any passcode page or login UI. Check if the URL query parameter `key` matches `process.env.APP_SECRET` or if an `authed` cookie exists with value `true`. If valid via `?key=`, set an `httpOnly` `authed=true` cookie on the response so sub-pages stay unlocked. If neither is valid, return a 404 response. Define `lib/constants.ts` with lists of top US service industries (e.g. Garage Door Repair, Chiropractor, Roofing Contractor, Plumbing, HVAC) and top US cities (e.g. Dallas, TX; Austin, TX; Miami, FL; Houston, TX; Phoenix, AZ). Then write `app/page.tsx` as a Server Component dashboard querying Postgres (`pool` from `lib/db.ts`): fetch and display all rows from `leads` table in a table filterable by status. Add a Targeting section displaying current active `niches` rows alongside multi-select checkboxes for preset Industries and US Cities (enforcing a minimum selection of 3 industries and 3 cities; saving updates/inserts combination rows into `niches` with status 'active'). Also include a form to add custom niche/city pairs. Add a settings section showing `daily_cap` and `paused`, with an input to update `daily_cap` and a toggle for `paused` via a small API route. Use Tailwind CSS for clean styling.
+> Define `lib/constants.ts` with lists of top US service industries (e.g. Garage Door Repair, Chiropractor, Roofing Contractor, Plumbing, HVAC) and top US cities (e.g. Dallas, TX; Austin, TX; Miami, FL; Houston, TX; Phoenix, AZ). Then write `app/page.tsx` as a Server Component dashboard querying Postgres (`pool` from `lib/db.ts`): fetch and display all rows from `leads` table in a table filterable by status. Add a Targeting section displaying current active `niches` rows alongside multi-select checkboxes for preset Industries and US Cities (enforcing a minimum selection of 3 industries and 3 cities; saving updates/inserts combination rows into `niches` with status 'active'). Also include a form to add custom niche/city pairs. Add a settings section showing `daily_cap` and `paused`, with an input to update `daily_cap` and a toggle for `paused` via a small API route. Use Tailwind CSS for clean styling.
 
-**Acceptance test:** accessing `http://localhost:3000/` returns 404, accessing `http://localhost:3000/?key=YOUR_SECRET` grants access to the dashboard and sets the session cookie, and you can see real data, toggle target cities/industries (enforcing min 3 of each), change daily cap, and toggle pause.
+**Acceptance test:** accessing `http://localhost:3000/` loads the dashboard with real data, you can toggle target cities/industries (enforcing min 3 of each), change daily cap, and toggle pause.
 
 ---
 

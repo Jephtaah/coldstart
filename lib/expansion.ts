@@ -51,7 +51,7 @@ Return STRICT JSON as an array of objects with this exact structure, with no oth
           Authorization: `Bearer ${apiKey}`,
         },
         body: JSON.stringify({
-          model: 'deepseek-chat',
+          model: 'deepseek-v4-flash',
           messages: [
             { role: 'system', content: systemPrompt },
             { role: 'user', content: 'Suggest new niche and city combinations.' },

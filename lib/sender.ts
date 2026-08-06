@@ -1,5 +1,6 @@
 import { pool } from './db'
 import { Resend } from 'resend'
+import { MAX_SEO_SCORE_TO_SEND, MAX_INITIAL_SENDS_PER_DAY } from './constants'
 
 export async function sendBatch(): Promise<number> {
   const apiKey = process.env.RESEND_API_KEY
@@ -30,16 +31,24 @@ export async function sendBatch(): Promise<number> {
     `SELECT COUNT(*) FROM leads WHERE initial_sent_at >= CURRENT_DATE`
   )
   const sentTodayCount = parseInt(countResult.rows[0].count, 10) || 0
-  const remaining = dailyCap - sentTodayCount
+  // Initial sends are capped by the daily capacity setting and never exceed
+  // the hard ceiling. Follow-ups have their own separate daily budget.
+  const remaining = Math.min(
+    dailyCap - sentTodayCount,
+    MAX_INITIAL_SENDS_PER_DAY - sentTodayCount
+  )
 
   if (remaining <= 0) {
     return 0
   }
 
-  // 3. Fetch up to 'remaining' leads with status = 'generated'
+  // 3. Fetch up to 'remaining' leads with status = 'generated', weakest SEO first,
+  //    excluding anything at/above the SEO cutoff (defense in depth).
   const leadsResult = await pool.query(
-    `SELECT id, email, generated_subject, generated_body FROM leads WHERE status = 'generated' LIMIT $1`,
-    [remaining]
+    `SELECT id, email, generated_subject, generated_body FROM leads
+     WHERE status = 'generated' AND (seo_score IS NULL OR seo_score < $2)
+     ORDER BY seo_score ASC NULLS LAST LIMIT $1`,
+    [remaining, MAX_SEO_SCORE_TO_SEND]
   )
 
   const leads = leadsResult.rows
@@ -72,7 +81,17 @@ export async function sendBatch(): Promise<number> {
         ReturnType<typeof resend.emails.send>
       >
 
-      const resendId = emailResponse.data?.id || 'unknown_id'
+      if (emailResponse.error || !emailResponse.data?.id) {
+        console.error(
+          `Resend rejected email for lead ${lead.id} (${lead.email}): ${
+            emailResponse.error?.message || 'no email id returned'
+          }`
+        )
+        await pool.query('UPDATE leads SET status = $1 WHERE id = $2', ['failed', lead.id])
+        continue
+      }
+
+      const resendId = emailResponse.data.id
 
       await pool.query(
         `UPDATE leads SET initial_sent_at = NOW(), initial_resend_id = $1, status = 'sent' WHERE id = $2`,

@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef, useSyncExternalStore } from 'react'
 import { useRouter } from 'next/navigation'
 
 interface Lead {
@@ -10,6 +10,12 @@ interface Lead {
   website: string | null
   email: string | null
   status: string
+  seo_score: number | null
+  seo_flags: string | null
+  generated_subject: string | null
+  generated_body: string | null
+  followup_subject: string | null
+  followup_body: string | null
   initial_sent_at: string | null
   initial_opened_at: string | null
   followup_sent_at: string | null
@@ -45,24 +51,34 @@ interface DashboardClientProps {
   initialNiches: Niche[]
   initialLeads: Lead[]
   stats: Stats
+  statusCounts: Record<string, number>
   defaultIndustries: string[]
   defaultCities: string[]
 }
+
+const LEAD_STATUS_TABS = ['all', 'new', 'scraped', 'generated', 'sent', 'followed_up', 'skipped', 'failed'] as const
 
 export default function DashboardClient({
   initialSettings,
   initialNiches,
   initialLeads,
   stats,
+  statusCounts,
   defaultIndustries,
   defaultCities,
 }: DashboardClientProps) {
   const router = useRouter()
+  const mounted = useSyncExternalStore(
+    () => () => {},
+    () => true,
+    () => false
+  )
   const [activeTab, setActiveTab] = useState<'leads' | 'targeting' | 'settings'>('leads')
 
   // Leads state
   const [statusFilter, setStatusFilter] = useState<string>('all')
   const [searchQuery, setSearchQuery] = useState<string>('')
+  const [expandedLeadId, setExpandedLeadId] = useState<string | null>(null)
 
   // Settings state
   const [dailyCap, setDailyCap] = useState(initialSettings.daily_cap)
@@ -70,10 +86,53 @@ export default function DashboardClient({
   const [settingsLoading, setSettingsLoading] = useState(false)
   const [settingsMessage, setSettingsMessage] = useState('')
 
-  useEffect(() => {
+  const [prevSettings, setPrevSettings] = useState(initialSettings)
+  if (prevSettings !== initialSettings) {
+    setPrevSettings(initialSettings)
     setDailyCap(initialSettings.daily_cap)
     setPaused(initialSettings.paused)
-  }, [initialSettings])
+  }
+
+  const dialogRef = useRef<HTMLDivElement>(null)
+  const selectedLead = initialLeads.find((lead) => lead.id === expandedLeadId) || null
+  const isEmailModalOpen = expandedLeadId !== null && selectedLead !== null
+
+  const FOCUSABLE_SELECTOR = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+
+  useEffect(() => {
+    if (!isEmailModalOpen) return
+    const dialog = dialogRef.current
+    const previouslyFocused = document.activeElement as HTMLElement | null
+    dialog?.focus()
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setExpandedLeadId(null)
+        return
+      }
+      if (e.key !== 'Tab' || !dialog) return
+      const focusable = Array.from(dialog.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR))
+      if (focusable.length === 0) return
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      const active = document.activeElement as HTMLElement | null
+      if (e.shiftKey && (active === first || active === dialog)) {
+        e.preventDefault()
+        last.focus()
+      } else if (!e.shiftKey && (active === last || active === dialog)) {
+        e.preventDefault()
+        first.focus()
+      }
+    }
+
+    document.addEventListener('keydown', onKeyDown)
+    document.body.style.overflow = 'hidden'
+    return () => {
+      document.removeEventListener('keydown', onKeyDown)
+      document.body.style.overflow = ''
+      previouslyFocused?.focus?.()
+    }
+  }, [isEmailModalOpen])
 
   // Determine which industries and cities are currently active based on initialNiches
   const activeNiches = initialNiches.filter((n) => n.status === 'active')
@@ -127,8 +186,8 @@ export default function DashboardClient({
       if (!res.ok) throw new Error(data.error || 'Failed to update settings')
       setSettingsMessage('Settings saved successfully.')
       router.refresh()
-    } catch (err: any) {
-      setSettingsMessage(err.message)
+    } catch (err: unknown) {
+      setSettingsMessage(err instanceof Error ? err.message : 'Failed to update settings')
     } finally {
       setSettingsLoading(false)
     }
@@ -180,8 +239,8 @@ export default function DashboardClient({
       if (!res.ok) throw new Error(data.error || 'Failed to save targeting')
       setTargetingSuccess('Targeting pools updated successfully.')
       router.refresh()
-    } catch (err: any) {
-      setTargetingError(err.message)
+    } catch (err: unknown) {
+      setTargetingError(err instanceof Error ? err.message : 'Failed to save targeting')
     } finally {
       setTargetingLoading(false)
     }
@@ -203,8 +262,8 @@ export default function DashboardClient({
       setCustomLabel('')
       setCustomCity('')
       router.refresh()
-    } catch (err: any) {
-      alert(err.message)
+    } catch (err: unknown) {
+      alert(err instanceof Error ? err.message : 'Failed to add custom niche')
     } finally {
       setCustomLoading(false)
     }
@@ -212,6 +271,19 @@ export default function DashboardClient({
 
   // Calculate opening rate
   const openRate = stats.sent_total > 0 ? ((stats.opened_total / stats.sent_total) * 100).toFixed(1) : '0.0'
+
+  function seoScoreInfo(score: number | null) {
+    if (score === null) {
+      return { label: '—', className: 'bg-[#F0F0EC] text-[#8C8C85] border-[#D9D9D3]', dot: 'bg-[#C7C7C0]' }
+    }
+    if (score <= 40) {
+      return { label: `${score} · Weak`, className: 'bg-rose-50 text-rose-800 border-rose-200', dot: 'bg-rose-600' }
+    }
+    if (score <= 70) {
+      return { label: `${score} · Fair`, className: 'bg-amber-50 text-amber-800 border-amber-200', dot: 'bg-amber-600' }
+    }
+    return { label: `${score} · Solid`, className: 'bg-emerald-50 text-emerald-800 border-emerald-200', dot: 'bg-emerald-600' }
+  }
 
   return (
     <div className="min-h-screen bg-[#F8F8F5] text-[#141413] font-sans selection:bg-[#141413] selection:text-[#F8F8F5]">
@@ -240,7 +312,7 @@ export default function DashboardClient({
             </div>
             <span className="text-[#D0D0C8]">|</span>
             <span className="text-xs text-[#6B6B65] font-mono">
-              Sync: {initialSettings.last_run_at ? new Date(initialSettings.last_run_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Never'}
+              Sync: {!initialSettings.last_run_at ? 'Never' : mounted ? new Date(initialSettings.last_run_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '…'}
             </span>
           </div>
         </div>
@@ -345,19 +417,31 @@ export default function DashboardClient({
           <div className="bg-white rounded-xl border border-[#E6E6DF] shadow-[0_1px_3px_rgba(0,0,0,0.02)] overflow-hidden">
             <div className="p-4 sm:p-5 border-b border-[#E6E6DF] bg-[#FAFAF7] flex flex-col sm:flex-row justify-between items-center gap-4">
               <div className="flex flex-wrap items-center gap-1.5">
-                {['all', 'new', 'scraped', 'generated', 'sent', 'followed_up', 'failed'].map((st) => (
-                  <button
-                    key={st}
-                    onClick={() => setStatusFilter(st)}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-medium capitalize transition-all ${
-                      statusFilter === st
-                        ? 'bg-[#141413] text-white shadow-sm'
-                        : 'bg-white text-[#595955] hover:bg-[#F0F0EC] border border-[#E0E0D8]'
-                    }`}
-                  >
-                    {st.replace('_', ' ')}
-                  </button>
-                ))}
+                {LEAD_STATUS_TABS.map((st) => {
+                  const count = st === 'all' ? stats.total : statusCounts[st] || 0
+                  return (
+                    <button
+                      key={st}
+                      onClick={() => setStatusFilter(st)}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-medium capitalize transition-all flex items-center gap-1.5 ${
+                        statusFilter === st
+                          ? 'bg-[#141413] text-white shadow-sm'
+                          : 'bg-white text-[#595955] hover:bg-[#F0F0EC] border border-[#E0E0D8]'
+                      }`}
+                    >
+                      {st.replace('_', ' ')}
+                      <span
+                        className={`px-1.5 py-0.5 rounded-full text-[10px] font-mono leading-none ${
+                          statusFilter === st
+                            ? 'bg-white/15 text-white'
+                            : 'bg-[#EFEFED] text-[#595955] border border-[#D9D9D3]'
+                        }`}
+                      >
+                        {count}
+                      </span>
+                    </button>
+                  )
+                })}
               </div>
               <div className="w-full sm:w-auto">
                 <input
@@ -374,18 +458,20 @@ export default function DashboardClient({
               <table className="w-full text-left text-sm">
                 <thead className="bg-[#F5F5F0] border-b border-[#E6E6DF] text-[#6B6B65] font-mono text-xs uppercase tracking-wider">
                   <tr>
-                    <th className="px-6 py-3.5 font-medium">Business / Location</th>
-                    <th className="px-6 py-3.5 font-medium">Pipeline Status</th>
-                    <th className="px-6 py-3.5 font-medium">Website</th>
-                    <th className="px-6 py-3.5 font-medium">Email Address</th>
-                    <th className="px-6 py-3.5 font-medium">Sent Timestamp</th>
-                    <th className="px-6 py-3.5 font-medium">Engagement</th>
+                    <th className="px-6 py-3.5 font-medium w-[30%] min-w-[220px]">Business / Location</th>
+                    <th className="px-6 py-3.5 font-medium w-[11%] min-w-[115px]">Pipeline Status</th>
+                    <th className="px-6 py-3.5 font-medium w-[10%] min-w-[110px]">SEO Weakness</th>
+                    <th className="px-6 py-3.5 font-medium w-[17%] min-w-[150px]">Website</th>
+                    <th className="px-6 py-3.5 font-medium w-[22%] min-w-[180px]">Email Address</th>
+                    <th className="px-6 py-3.5 font-medium w-[11%] min-w-[110px]">Sent Timestamp</th>
+                    <th className="px-6 py-3.5 font-medium w-[5%] min-w-[80px]">Engagement</th>
+                    <th className="px-6 py-3.5 font-medium w-[5%] min-w-[100px]"></th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[#EFEFED]">
                   {filteredLeads.length === 0 ? (
                     <tr>
-                      <td colSpan={6} className="px-6 py-12 text-center text-[#71716B]">
+                      <td colSpan={8} className="px-6 py-12 text-center text-[#71716B]">
                         <div className="max-w-xs mx-auto space-y-2">
                           <p className="font-medium text-[#383833]">No leads found matching current filter</p>
                           <p className="text-xs text-[#8C8C85]">Try adjusting your search query or status filter above.</p>
@@ -396,8 +482,8 @@ export default function DashboardClient({
                     filteredLeads.map((lead) => (
                       <tr key={lead.id} className="hover:bg-[#FCFCFA] transition-colors">
                         <td className="px-6 py-4">
-                          <div className="font-medium text-[#141413]">{lead.business_name}</div>
-                          {lead.address && <div className="text-xs text-[#71716B] mt-0.5">{lead.address}</div>}
+                          <div className="font-medium text-[#141413] truncate" title={lead.business_name}>{lead.business_name}</div>
+                          {lead.address && <div className="text-xs text-[#71716B] mt-0.5 truncate">{lead.address}</div>}
                         </td>
                         <td className="px-6 py-4">
                           <span
@@ -406,6 +492,8 @@ export default function DashboardClient({
                                 ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
                                 : lead.status === 'failed'
                                 ? 'bg-rose-50 text-rose-800 border-rose-200'
+                                : lead.status === 'skipped'
+                                ? 'bg-slate-50 text-slate-700 border-slate-200'
                                 : lead.status === 'generated' || lead.status === 'scraped'
                                 ? 'bg-sky-50 text-sky-800 border-sky-200'
                                 : 'bg-[#F0F0EC] text-[#595955] border-[#D9D9D3]'
@@ -416,6 +504,8 @@ export default function DashboardClient({
                                 ? 'bg-emerald-600'
                                 : lead.status === 'failed'
                                 ? 'bg-rose-600'
+                                : lead.status === 'skipped'
+                                ? 'bg-slate-500'
                                 : lead.status === 'generated' || lead.status === 'scraped'
                                 ? 'bg-sky-600'
                                 : 'bg-[#8C8C85]'
@@ -423,16 +513,31 @@ export default function DashboardClient({
                             {lead.status.replace('_', ' ')}
                           </span>
                         </td>
-                        <td className="px-6 py-4 font-mono text-xs text-[#595955] truncate max-w-xs">
+                        <td className="px-6 py-4">
+                          {(() => {
+                            const info = seoScoreInfo(lead.seo_score)
+                            return (
+                              <span
+                                className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium capitalize border whitespace-nowrap ${info.className}`}
+                                title={lead.seo_flags ? lead.seo_flags.split(',').join(', ') : 'No SEO flags recorded'}
+                              >
+                                <span className={`w-1.5 h-1.5 rounded-full ${info.dot}`} />
+                                {info.label}
+                              </span>
+                            )
+                          })()}
+                        </td>
+                        <td className="px-6 py-4 font-mono text-xs text-[#595955]">
                           {lead.website ? (
                             <a
                               href={lead.website.startsWith('http') ? lead.website : `https://${lead.website}`}
                               target="_blank"
                               rel="noreferrer"
-                              className="text-blue-600 hover:underline inline-flex items-center gap-1"
+                              title={lead.website.replace(/^https?:\/\//, '')}
+                              className="text-blue-600 hover:underline inline-flex items-center gap-1 max-w-full"
                             >
-                              {lead.website.replace(/^https?:\/\//, '')}
-                              <svg className="w-3 h-3 opacity-60" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <span className="truncate">{lead.website.replace(/^https?:\/\//, '')}</span>
+                              <svg className="w-3 h-3 opacity-60 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
                               </svg>
                             </a>
@@ -440,14 +545,20 @@ export default function DashboardClient({
                             <span className="text-[#A3A39E] italic">Unlisted</span>
                           )}
                         </td>
-                        <td className="px-6 py-4 font-mono text-xs text-[#383833]">
-                          {lead.email || <span className="text-[#A3A39E] italic font-sans">No email found</span>}
+                        <td className="px-6 py-4 font-mono text-xs text-[#383833] truncate">
+                          {lead.email ? (
+                            <a href={`mailto:${lead.email}`} className="hover:underline" title={lead.email}>
+                              {lead.email}
+                            </a>
+                          ) : (
+                            <span className="text-[#A3A39E] italic font-sans">No email found</span>
+                          )}
                         </td>
-                        <td className="px-6 py-4 font-mono text-xs text-[#71716B]">
-                          {lead.initial_sent_at ? new Date(lead.initial_sent_at).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }) : '—'}
+                        <td className="px-6 py-4 font-mono text-xs text-[#71716B] truncate">
+                          {lead.initial_sent_at ? (mounted ? new Date(lead.initial_sent_at).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }) : '…') : '—'}
                           {lead.followup_sent_at && (
                             <div className="text-[10px] text-[#A3A39E] mt-0.5">
-                              FU: {new Date(lead.followup_sent_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                              FU: {mounted ? new Date(lead.followup_sent_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '…'}
                             </div>
                           )}
                         </td>
@@ -459,6 +570,16 @@ export default function DashboardClient({
                             </span>
                           ) : (
                             <span className="text-xs text-[#A3A39E]">—</span>
+                          )}
+                        </td>
+                        <td className="px-6 py-4">
+                          {(lead.generated_subject || lead.followup_subject) && (
+                            <button
+                              onClick={() => setExpandedLeadId(lead.id)}
+                              className="inline-flex items-center gap-1 text-xs font-semibold whitespace-nowrap text-white bg-blue-600 hover:bg-blue-700 px-3 py-1.5 rounded-lg transition-colors shadow-sm"
+                            >
+                              View Email
+                            </button>
                           )}
                         </td>
                       </tr>
@@ -680,7 +801,7 @@ export default function DashboardClient({
                   onChange={(e) => setDailyCap(parseInt(e.target.value, 10) || 1)}
                   className="w-full px-3.5 py-2.5 text-sm bg-white border border-[#D9D9D3] rounded-xl focus:outline-none focus:ring-2 focus:ring-[#141413]/20 focus:border-[#141413]"
                 />
-                <p className="text-xs text-[#8C8C85] mt-1.5">Strictly hard-capped under Resend's 100/day free tier ceiling.</p>
+                <p className="text-xs text-[#8C8C85] mt-1.5">Applies to initial sends only and does not count follow-ups. Initial sends are hard-capped at 50/day; follow-ups run on a separate 50/day budget. Combined total stays within Resend&apos;s 100/day free tier ceiling.</p>
               </div>
 
               <div className="flex items-center justify-between p-5 bg-[#FAFAF7] rounded-xl border border-[#E6E6DF]">
@@ -719,6 +840,73 @@ export default function DashboardClient({
           </div>
         )}
       </main>
+
+      {/* Email Detail Modal */}
+      {selectedLead && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6">
+          <div
+            className="absolute inset-0 bg-[#141413]/50 backdrop-blur-sm"
+            onClick={() => setExpandedLeadId(null)}
+          />
+          <div
+            ref={dialogRef}
+            role="dialog"
+            aria-modal="true"
+            tabIndex={-1}
+            aria-label={`Email detail for ${selectedLead.business_name}`}
+            className="relative bg-white w-full max-w-2xl max-h-[85vh] flex flex-col rounded-2xl border border-[#E6E6DF] shadow-2xl overflow-hidden focus:outline-none"
+          >
+            <div className="px-6 py-5 border-b border-[#E6E6DF] bg-[#FAFAF7] flex items-start justify-between gap-4">
+              <div className="min-w-0">
+                <h2 className="text-base font-semibold tracking-tight text-[#141413] truncate">{selectedLead.business_name}</h2>
+                <p className="text-xs font-mono text-[#71716B] mt-0.5 truncate">
+                  {selectedLead.email || 'No email on file'}
+                  {selectedLead.address ? ` · ${selectedLead.address}` : ''}
+                </p>
+              </div>
+              <button
+                onClick={() => setExpandedLeadId(null)}
+                aria-label="Close email detail"
+                className="shrink-0 w-8 h-8 inline-flex items-center justify-center rounded-lg text-[#595955] hover:bg-[#ECECE7] hover:text-[#141413] transition-colors"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <div className="px-6 py-5 overflow-y-auto space-y-5">
+              {selectedLead.generated_subject && (
+                <div className="bg-[#FAFAF7] border border-[#E6E6DF] rounded-xl p-5">
+                  <div className="flex items-center gap-2 mb-3">
+                    <span className="text-[10px] font-mono uppercase tracking-widest text-[#71716B] bg-white border border-[#E0E0D8] px-2 py-0.5 rounded">Initial Email</span>
+                    {selectedLead.initial_sent_at && (
+                      <span className="text-[11px] font-mono text-[#8C8C85]">
+                        Sent {mounted ? new Date(selectedLead.initial_sent_at).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : '…'}
+                      </span>
+                    )}
+                  </div>
+                  <div className="font-semibold text-[#141413] mb-2">{selectedLead.generated_subject}</div>
+                  <p className="text-sm text-[#383833] whitespace-pre-wrap leading-relaxed">{selectedLead.generated_body || '—'}</p>
+                </div>
+              )}
+              {selectedLead.followup_subject && (
+                <div className="bg-[#FAFAF7] border border-[#E6E6DF] rounded-xl p-5">
+                  <div className="flex items-center gap-2 mb-3">
+                    <span className="text-[10px] font-mono uppercase tracking-widest text-[#71716B] bg-white border border-[#E0E0D8] px-2 py-0.5 rounded">Follow-up Email</span>
+                    {selectedLead.followup_sent_at && (
+                      <span className="text-[11px] font-mono text-[#8C8C85]">
+                        Sent {mounted ? new Date(selectedLead.followup_sent_at).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : '…'}
+                      </span>
+                    )}
+                  </div>
+                  <div className="font-semibold text-[#141413] mb-2">{selectedLead.followup_subject}</div>
+                  <p className="text-sm text-[#383833] whitespace-pre-wrap leading-relaxed">{selectedLead.followup_body || '—'}</p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
