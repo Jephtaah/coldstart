@@ -229,7 +229,7 @@ export async function GET() {
   }
 
   // Check for failures and send alert email if configured
-  const failedStages = Object.entries(results).filter(([_, res]) => !res.success || res.error)
+  const failedStages = Object.entries(results).filter(([, res]) => !res.success || res.error)
   if (failedStages.length > 0 && process.env.RESEND_API_KEY && process.env.REPLY_TO_EMAIL) {
     try {
       const resend = new Resend(process.env.RESEND_API_KEY)
