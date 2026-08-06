@@ -21,8 +21,49 @@ interface StageResult {
   error?: string
 }
 
+async function getRemainingCap(): Promise<number> {
+  const settingsResult = await pool.query('SELECT daily_cap, paused FROM settings WHERE id = 1')
+  if (settingsResult.rows.length === 0) {
+    throw new Error('Settings table row with id = 1 not found.')
+  }
+
+  const settings = settingsResult.rows[0]
+  if (settings.paused) {
+    return 0
+  }
+
+  const countResult = await pool.query(
+    `SELECT COUNT(*) FROM leads WHERE initial_sent_at >= CURRENT_DATE OR followup_sent_at >= CURRENT_DATE`
+  )
+  const sentTodayCount = parseInt(countResult.rows[0].count, 10) || 0
+  return settings.daily_cap - sentTodayCount
+}
+
 export async function GET() {
   const results: Record<string, StageResult> = {}
+
+  // Compute today's remaining send budget. If the daily cap is already spent,
+  // skip the entire run so the pipeline waits for the next day.
+  let remaining = Number.MAX_SAFE_INTEGER
+  try {
+    remaining = await getRemainingCap()
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err)
+    results.cap = { success: false, error: message }
+  }
+
+  if (remaining <= 0) {
+    await pool.query('UPDATE settings SET last_run_at = NOW() WHERE id = 1')
+    return NextResponse.json(
+      {
+        success: true,
+        hasRemaining: false,
+        capReached: true,
+        results: { cap: { success: true, remaining } },
+      },
+      { status: 200 }
+    )
+  }
 
   // Stage 1: Discovery
   try {
@@ -170,9 +211,10 @@ export async function GET() {
     )
     const pending = pendingResult.rows[0]
     hasRemaining =
-      parseInt(pending.to_scrape, 10) > 0 ||
-      parseInt(pending.to_generate, 10) > 0 ||
-      parseInt(pending.active_niches, 10) > 0
+      remaining > 0 &&
+      (parseInt(pending.to_scrape, 10) > 0 ||
+        parseInt(pending.to_generate, 10) > 0 ||
+        parseInt(pending.active_niches, 10) > 0)
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err)
     results.settings = { success: false, error: message }

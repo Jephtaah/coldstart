@@ -45,7 +45,7 @@ No manual review step in the loop. Jephtah checks in on a dashboard when he want
 
 ## 5. Guardrails (v1)
 
-- **Daily send cap**: configurable, starts low (e.g. 20-30/day), hard-capped under Resend's 100/day free ceiling.
+- **Daily send cap**: configurable (default 90/day), hard-capped under Resend's 100/day free ceiling. Once the cap is reached, discovery and the rest of the pipeline stop and wait for the next day.
 - **Dedup**: never contact the same business twice (checked by domain + place_id before every send).
 - **Follow-up cap**: exactly one follow-up per lead, only once, only 7+ days after the first send.
 - **Pause switch**: one flag in settings that halts all sending immediately.

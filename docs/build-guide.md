@@ -122,13 +122,13 @@ create table leads (
 
 create table settings (
   id int primary key default 1,
-  daily_cap int not null default 25,
+  daily_cap int not null default 90,
   paused boolean not null default false,
   last_run_at timestamptz,
   constraint single_row check (id = 1)
 );
 
-insert into settings (id, daily_cap, paused) values (1, 25, false);
+insert into settings (id, daily_cap, paused) values (1, 90, false);
 ```
 
 Then seed your starting niches — 3 default industries × 3 default cities (9 active search pools):
