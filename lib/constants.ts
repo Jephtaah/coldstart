@@ -24,3 +24,4 @@ export const DEFAULT_CITIES = [
 
 export const MAX_PLACES_PAGES_PER_NICHE = 5
 export const PLACES_PAGES_TO_SKIP = 2
+export const MAX_SEO_SCORE_TO_SEND = 65

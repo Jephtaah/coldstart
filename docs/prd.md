@@ -52,7 +52,7 @@ No manual review step in the loop. Jephtah checks in on a dashboard when he want
 - **Follow-up cap**: exactly one follow-up per lead, only once, only 7+ days after the first send.
 - **Pause switch**: one flag in settings that halts all sending immediately.
 - **Targeting guardrail**: minimum 3 active industries and 3 active US cities selected at any point (defaulting to Garage Door Repair, Chiropractor, Roofing Contractor × Dallas TX, Austin TX, Miami FL, giving 9 active search pools).
-- **SEO-first targeting**: every lead is scored 0–100 on SEO weakness (lower = weaker). Scrape, generation, and send stages all process the weakest first, so the daily cap is spent on the businesses that need the service most. Businesses without a website are intentionally out of scope for v1.
+- **SEO-first targeting**: every lead is scored 0–100 on SEO weakness (lower = weaker). Scrape, generation, and send stages all process the weakest first, so the daily cap is spent on the businesses that need the service most. Leads scoring 65 or above are hard-skipped (marked `skipped`) and never generated or emailed. Businesses without a website are intentionally out of scope for v1.
 - **Style guardrail**: the AI prompt enforces Jephtah's known preferences (no em dashes, no corporate filler, no template-triplet phrasing, one honest specific detail as the opener, no generic "I noticed your website..." lines) and pitches site modifications/redesign & SEO optimization (all v1 leads have an existing website).
 
 ## 6. Architecture (high level)
@@ -68,7 +68,7 @@ No manual review step in the loop. Jephtah checks in on a dashboard when he want
 ## 7. Data model
 
 - **`niches`** — id, label, city, status (`active` / `exhausted`), source (`seed` / `ai_suggested`), reasoning (nullable, filled when AI-suggested), created_at
-- **`leads`** — id, niche_id, business_name, address, website, email, place_id, status (`new` / `scraped` / `generated` / `sent` / `followed_up` / `failed`), seo_score (0 = weakest SEO, top outreach priority; 100 = strongest), seo_flags (comma-separated weaknesses: no_title, no_meta_description, no_viewport, no_h1, thin_content, low_review_count, deep_result_page_N), scraped_content, generated_subject, generated_body, initial_sent_at, initial_opened_at, initial_resend_id, followup_subject, followup_body, followup_sent_at, followup_opened_at, followup_resend_id, created_at
+- **`leads`** — id, niche_id, business_name, address, website, email, place_id, status (`new` / `scraped` / `generated` / `sent` / `followed_up` / `skipped` / `failed`), seo_score (0 = weakest SEO, top outreach priority; 100 = strongest), seo_flags (comma-separated weaknesses: no_title, no_meta_description, no_viewport, no_h1, thin_content, low_review_count, deep_result_page_N), scraped_content, generated_subject, generated_body, initial_sent_at, initial_opened_at, initial_resend_id, followup_subject, followup_body, followup_sent_at, followup_opened_at, followup_resend_id, created_at
 - **`settings`** — single row: daily_cap, paused (bool), last_run_at
 - **`suppressed_places`** — place_id of businesses dropped by the pipeline (no website, unreachable, or no discoverable email), so they're never re-inserted by a later discovery run
 

@@ -6,6 +6,7 @@ import { generateEmail } from '@/lib/generator'
 import { sendBatch } from '@/lib/sender'
 import { sendFollowUps } from '@/lib/followup'
 import { expandNiches } from '@/lib/expansion'
+import { MAX_SEO_SCORE_TO_SEND } from '@/lib/constants'
 import { Resend } from 'resend'
 
 export const dynamic = 'force-dynamic'
@@ -150,8 +151,14 @@ export async function GET() {
     results.scraping = { success: false, error: message }
   }
 
-  // Stage 3: Generation
+  // Stage 3: Generation (leads scoring at/above the SEO cutoff are skipped first)
   try {
+    const skipResult = await pool.query(
+      `UPDATE leads SET status = 'skipped' WHERE status = ANY($1::text[]) AND seo_score >= $2`,
+      [['scraped', 'generated'], MAX_SEO_SCORE_TO_SEND]
+    )
+    const skippedCount = skipResult.rowCount || 0
+
     const leadsResult = await pool.query(
       'SELECT id FROM leads WHERE status = $1 ORDER BY seo_score ASC NULLS LAST LIMIT $2',
       ['scraped', MAX_GENERATES_PER_RUN]
@@ -172,6 +179,7 @@ export async function GET() {
     results.generation = {
       success: errors.length === 0,
       processed: generatedCount,
+      ...(skippedCount > 0 && { skipped: skippedCount }),
       ...(errors.length > 0 && { error: errors.join('; ') }),
     }
   } catch (err: unknown) {

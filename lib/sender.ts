@@ -1,5 +1,6 @@
 import { pool } from './db'
 import { Resend } from 'resend'
+import { MAX_SEO_SCORE_TO_SEND } from './constants'
 
 export async function sendBatch(): Promise<number> {
   const apiKey = process.env.RESEND_API_KEY
@@ -36,10 +37,13 @@ export async function sendBatch(): Promise<number> {
     return 0
   }
 
-  // 3. Fetch up to 'remaining' leads with status = 'generated', weakest SEO first
+  // 3. Fetch up to 'remaining' leads with status = 'generated', weakest SEO first,
+  //    excluding anything at/above the SEO cutoff (defense in depth).
   const leadsResult = await pool.query(
-    `SELECT id, email, generated_subject, generated_body FROM leads WHERE status = 'generated' ORDER BY seo_score ASC NULLS LAST LIMIT $1`,
-    [remaining]
+    `SELECT id, email, generated_subject, generated_body FROM leads
+     WHERE status = 'generated' AND (seo_score IS NULL OR seo_score < $2)
+     ORDER BY seo_score ASC NULLS LAST LIMIT $1`,
+    [remaining, MAX_SEO_SCORE_TO_SEND]
   )
 
   const leads = leadsResult.rows

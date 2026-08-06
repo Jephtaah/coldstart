@@ -105,8 +105,8 @@ create table leads (
   website text,
   email text,
   place_id text unique,
-  status text not null default 'new', -- 'new' | 'scraped' | 'generated' | 'sent' | 'followed_up' | 'failed'
-  seo_score int, -- 0 (weakest SEO, top outreach priority) to 100 (strongest)
+  status text not null default 'new', -- 'new' | 'scraped' | 'generated' | 'sent' | 'followed_up' | 'skipped' | 'failed'
+  seo_score int, -- 0 (weakest SEO, top outreach priority) to 100 (strongest); >= 65 is hard-skipped
   seo_flags text, -- comma-separated weakness flags: no_title, no_meta_description, no_viewport, no_h1, thin_content, low_review_count, deep_result_page_N
   scraped_content text,
   generated_subject text,

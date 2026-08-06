@@ -56,7 +56,7 @@ interface DashboardClientProps {
   defaultCities: string[]
 }
 
-const LEAD_STATUS_TABS = ['all', 'new', 'scraped', 'generated', 'sent', 'followed_up', 'failed'] as const
+const LEAD_STATUS_TABS = ['all', 'new', 'scraped', 'generated', 'sent', 'followed_up', 'skipped', 'failed'] as const
 
 export default function DashboardClient({
   initialSettings,
@@ -492,6 +492,8 @@ export default function DashboardClient({
                                 ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
                                 : lead.status === 'failed'
                                 ? 'bg-rose-50 text-rose-800 border-rose-200'
+                                : lead.status === 'skipped'
+                                ? 'bg-slate-50 text-slate-700 border-slate-200'
                                 : lead.status === 'generated' || lead.status === 'scraped'
                                 ? 'bg-sky-50 text-sky-800 border-sky-200'
                                 : 'bg-[#F0F0EC] text-[#595955] border-[#D9D9D3]'
@@ -502,6 +504,8 @@ export default function DashboardClient({
                                 ? 'bg-emerald-600'
                                 : lead.status === 'failed'
                                 ? 'bg-rose-600'
+                                : lead.status === 'skipped'
+                                ? 'bg-slate-500'
                                 : lead.status === 'generated' || lead.status === 'scraped'
                                 ? 'bg-sky-600'
                                 : 'bg-[#8C8C85]'
