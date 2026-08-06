@@ -49,15 +49,19 @@ interface DashboardClientProps {
   initialNiches: Niche[]
   initialLeads: Lead[]
   stats: Stats
+  statusCounts: Record<string, number>
   defaultIndustries: string[]
   defaultCities: string[]
 }
+
+const LEAD_STATUS_TABS = ['all', 'new', 'scraped', 'generated', 'sent', 'followed_up', 'failed'] as const
 
 export default function DashboardClient({
   initialSettings,
   initialNiches,
   initialLeads,
   stats,
+  statusCounts,
   defaultIndustries,
   defaultCities,
 }: DashboardClientProps) {
@@ -355,19 +359,31 @@ export default function DashboardClient({
           <div className="bg-white rounded-xl border border-[#E6E6DF] shadow-[0_1px_3px_rgba(0,0,0,0.02)] overflow-hidden">
             <div className="p-4 sm:p-5 border-b border-[#E6E6DF] bg-[#FAFAF7] flex flex-col sm:flex-row justify-between items-center gap-4">
               <div className="flex flex-wrap items-center gap-1.5">
-                {['all', 'new', 'scraped', 'generated', 'sent', 'followed_up', 'failed'].map((st) => (
-                  <button
-                    key={st}
-                    onClick={() => setStatusFilter(st)}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-medium capitalize transition-all ${
-                      statusFilter === st
-                        ? 'bg-[#141413] text-white shadow-sm'
-                        : 'bg-white text-[#595955] hover:bg-[#F0F0EC] border border-[#E0E0D8]'
-                    }`}
-                  >
-                    {st.replace('_', ' ')}
-                  </button>
-                ))}
+                {LEAD_STATUS_TABS.map((st) => {
+                  const count = st === 'all' ? stats.total : statusCounts[st] || 0
+                  return (
+                    <button
+                      key={st}
+                      onClick={() => setStatusFilter(st)}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-medium capitalize transition-all flex items-center gap-1.5 ${
+                        statusFilter === st
+                          ? 'bg-[#141413] text-white shadow-sm'
+                          : 'bg-white text-[#595955] hover:bg-[#F0F0EC] border border-[#E0E0D8]'
+                      }`}
+                    >
+                      {st.replace('_', ' ')}
+                      <span
+                        className={`px-1.5 py-0.5 rounded-full text-[10px] font-mono leading-none ${
+                          statusFilter === st
+                            ? 'bg-white/15 text-white'
+                            : 'bg-[#EFEFED] text-[#595955] border border-[#D9D9D3]'
+                        }`}
+                      >
+                        {count}
+                      </span>
+                    </button>
+                  )
+                })}
               </div>
               <div className="w-full sm:w-auto">
                 <input

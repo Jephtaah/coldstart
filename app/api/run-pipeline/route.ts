@@ -13,6 +13,7 @@ export const dynamic = 'force-dynamic'
 const MAX_NICHES_PER_RUN = 5
 const MAX_SCRAPES_PER_RUN = 12
 const MAX_GENERATES_PER_RUN = 8
+const PENDING_LEAD_STATUSES = ['new', 'scraped', 'generated']
 
 interface StageResult {
   success: boolean
@@ -79,7 +80,14 @@ export async function GET() {
         const count = await discoverBusinesses(niche.label, niche.city, niche.id)
         totalDiscovered += count
         if (count === 0) {
-          await pool.query('UPDATE niches SET status = $1 WHERE id = $2', ['exhausted', niche.id])
+          const pendingResult = await pool.query(
+            `SELECT COUNT(*) FROM leads WHERE niche_id = $1 AND status = ANY($2::text[])`,
+            [niche.id, PENDING_LEAD_STATUSES]
+          )
+          const pendingCount = parseInt(pendingResult.rows[0].count, 10)
+          if (pendingCount === 0) {
+            await pool.query('UPDATE niches SET status = $1 WHERE id = $2', ['exhausted', niche.id])
+          }
         }
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err)

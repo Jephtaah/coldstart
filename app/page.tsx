@@ -5,7 +5,7 @@ import DashboardClient from '@/components/DashboardClient'
 export const dynamic = 'force-dynamic'
 
 export default async function Page() {
-  const [settingsRes, nichesRes, leadsRes, statsRes] = await Promise.all([
+  const [settingsRes, nichesRes, leadsRes, statsRes, statusCountsRes] = await Promise.all([
     pool.query('select * from settings where id = 1'),
     pool.query('select * from niches order by created_at desc'),
     pool.query('select * from leads order by created_at desc limit 500'),
@@ -17,6 +17,7 @@ export default async function Page() {
         coalesce(sum(case when initial_sent_at >= current_date then 1 else 0 end), 0) as sent_today
       from leads
     `),
+    pool.query('select status, count(*)::int as count from leads group by status'),
   ])
 
   const settings = settingsRes.rows[0] || { daily_cap: 90, paused: false, last_run_at: null }
@@ -29,6 +30,13 @@ export default async function Page() {
     opened_total: Number(rawStats.opened_total) || 0,
     sent_today: Number(rawStats.sent_today) || 0,
   }
+  const statusCounts = statusCountsRes.rows.reduce(
+    (acc, row) => {
+      acc[row.status] = Number(row.count) || 0
+      return acc
+    },
+    {} as Record<string, number>
+  )
 
   return (
     <DashboardClient
@@ -36,6 +44,7 @@ export default async function Page() {
       initialNiches={niches}
       initialLeads={leads}
       stats={stats}
+      statusCounts={statusCounts}
       defaultIndustries={DEFAULT_INDUSTRIES}
       defaultCities={DEFAULT_CITIES}
     />
