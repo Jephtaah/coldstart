@@ -151,7 +151,17 @@ Previous Subject: ${lead.generated_subject || ''}
         ReturnType<typeof resend.emails.send>
       >
 
-      const resendId = emailResponse.data?.id || 'unknown_id'
+      if (emailResponse.error || !emailResponse.data?.id) {
+        console.error(
+          `Resend rejected follow-up for lead ${lead.id} (${lead.email}): ${
+            emailResponse.error?.message || 'no email id returned'
+          }`
+        )
+        await pool.query('UPDATE leads SET status = $1 WHERE id = $2', ['failed', lead.id])
+        continue
+      }
+
+      const resendId = emailResponse.data.id
 
       await pool.query(
         `UPDATE leads SET followup_subject = $1, followup_body = $2, followup_sent_at = NOW(), followup_resend_id = $3, status = 'followed_up' WHERE id = $4`,

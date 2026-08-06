@@ -10,6 +10,10 @@ interface Lead {
   website: string | null
   email: string | null
   status: string
+  generated_subject: string | null
+  generated_body: string | null
+  followup_subject: string | null
+  followup_body: string | null
   initial_sent_at: string | null
   initial_opened_at: string | null
   followup_sent_at: string | null
@@ -68,6 +72,7 @@ export default function DashboardClient({
   // Leads state
   const [statusFilter, setStatusFilter] = useState<string>('all')
   const [searchQuery, setSearchQuery] = useState<string>('')
+  const [expandedLeadId, setExpandedLeadId] = useState<string | null>(null)
 
   // Settings state
   const [dailyCap, setDailyCap] = useState(initialSettings.daily_cap)
@@ -385,12 +390,13 @@ export default function DashboardClient({
                     <th className="px-6 py-3.5 font-medium">Email Address</th>
                     <th className="px-6 py-3.5 font-medium">Sent Timestamp</th>
                     <th className="px-6 py-3.5 font-medium">Engagement</th>
+                    <th className="px-6 py-3.5 font-medium"></th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[#EFEFED]">
                   {filteredLeads.length === 0 ? (
                     <tr>
-                      <td colSpan={6} className="px-6 py-12 text-center text-[#71716B]">
+                      <td colSpan={7} className="px-6 py-12 text-center text-[#71716B]">
                         <div className="max-w-xs mx-auto space-y-2">
                           <p className="font-medium text-[#383833]">No leads found matching current filter</p>
                           <p className="text-xs text-[#8C8C85]">Try adjusting your search query or status filter above.</p>
@@ -399,7 +405,8 @@ export default function DashboardClient({
                     </tr>
                   ) : (
                     filteredLeads.map((lead) => (
-                      <tr key={lead.id} className="hover:bg-[#FCFCFA] transition-colors">
+                      <React.Fragment key={lead.id}>
+                      <tr className="hover:bg-[#FCFCFA] transition-colors">
                         <td className="px-6 py-4">
                           <div className="font-medium text-[#141413]">{lead.business_name}</div>
                           {lead.address && <div className="text-xs text-[#71716B] mt-0.5">{lead.address}</div>}
@@ -466,7 +473,38 @@ export default function DashboardClient({
                             <span className="text-xs text-[#A3A39E]">—</span>
                           )}
                         </td>
+                        <td className="px-6 py-4">
+                          {(lead.generated_subject || lead.followup_subject) && (
+                            <button
+                              onClick={() => setExpandedLeadId(expandedLeadId === lead.id ? null : lead.id)}
+                              className="inline-flex items-center gap-1 text-xs font-medium text-[#595955] bg-[#F5F5F0] hover:bg-[#ECECE7] border border-[#E0E0D8] px-3 py-1.5 rounded-lg transition-colors"
+                            >
+                              {expandedLeadId === lead.id ? 'Hide Email' : 'View Email'}
+                            </button>
+                          )}
+                        </td>
                       </tr>
+                      {expandedLeadId === lead.id && (lead.generated_subject || lead.followup_subject) && (
+                        <tr className="bg-[#FAFAF7] border-b border-[#EFEFED]">
+                          <td colSpan={7} className="px-6 py-5">
+                            <div className="space-y-4">
+                              <div className="bg-white border border-[#E6E6DF] rounded-xl p-5">
+                                <div className="text-[11px] font-mono uppercase tracking-widest text-[#71716B] mb-2">Initial Email</div>
+                                <div className="font-semibold text-[#141413] mb-2">{lead.generated_subject || '—'}</div>
+                                <p className="text-sm text-[#383833] whitespace-pre-wrap leading-relaxed">{lead.generated_body || '—'}</p>
+                              </div>
+                              {lead.followup_subject && (
+                                <div className="bg-white border border-[#E6E6DF] rounded-xl p-5">
+                                  <div className="text-[11px] font-mono uppercase tracking-widest text-[#71716B] mb-2">Follow-up Email</div>
+                                  <div className="font-semibold text-[#141413] mb-2">{lead.followup_subject}</div>
+                                  <p className="text-sm text-[#383833] whitespace-pre-wrap leading-relaxed">{lead.followup_body}</p>
+                                </div>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                      </React.Fragment>
                     ))
                   )}
                 </tbody>

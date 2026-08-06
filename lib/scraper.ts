@@ -82,7 +82,7 @@ async function fetchPageTextAndEmails(url: string): Promise<{ text: string; emai
 
 export async function scrapeWebsite(leadId: string): Promise<boolean> {
   const result = await pool.query(
-    'SELECT website, email, business_name, address FROM leads WHERE id = $1',
+    'SELECT website, email, business_name, address, place_id FROM leads WHERE id = $1',
     [leadId]
   )
 
@@ -96,13 +96,19 @@ export async function scrapeWebsite(leadId: string): Promise<boolean> {
   const businessName = lead.business_name || 'Unknown Business'
   const address = lead.address || 'Unknown Address'
 
+  async function discardLead() {
+    if (lead.place_id) {
+      await pool.query(
+        `INSERT INTO suppressed_places (place_id) VALUES ($1) ON CONFLICT (place_id) DO NOTHING`,
+        [lead.place_id]
+      )
+    }
+    await pool.query('DELETE FROM leads WHERE id = $1', [leadId])
+  }
+
   if (!website || website.trim() === '') {
-    const scrapedContent = `Business Name: ${businessName}\nAddress: ${address}\nWebsite: None`
-    await pool.query(
-      `UPDATE leads SET scraped_content = $1, status = 'scraped' WHERE id = $2`,
-      [scrapedContent, leadId]
-    )
-    return true
+    await discardLead()
+    return false
   }
 
   try {
@@ -110,6 +116,11 @@ export async function scrapeWebsite(leadId: string): Promise<boolean> {
     let bestEmail = existingEmail
     if (!bestEmail && emails.length > 0) {
       bestEmail = emails[0]
+    }
+
+    if (!bestEmail || bestEmail.trim() === '') {
+      await discardLead()
+      return false
     }
 
     const scrapedContent = text || `Business Name: ${businessName}\nAddress: ${address}\nWebsite: ${website}`
@@ -120,7 +131,6 @@ export async function scrapeWebsite(leadId: string): Promise<boolean> {
     )
     return true
   } catch {
-    // If fetching failed
     if (existingEmail) {
       const fallbackContent = `Business Name: ${businessName}\nAddress: ${address}\nWebsite: ${website} (Scrape failed, email retained)`
       await pool.query(
@@ -128,12 +138,8 @@ export async function scrapeWebsite(leadId: string): Promise<boolean> {
         [fallbackContent, leadId]
       )
       return true
-    } else {
-      await pool.query(
-        `UPDATE leads SET status = 'failed' WHERE id = $1`,
-        [leadId]
-      )
-      return false
     }
+    await discardLead()
+    return false
   }
 }

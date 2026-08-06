@@ -72,7 +72,17 @@ export async function sendBatch(): Promise<number> {
         ReturnType<typeof resend.emails.send>
       >
 
-      const resendId = emailResponse.data?.id || 'unknown_id'
+      if (emailResponse.error || !emailResponse.data?.id) {
+        console.error(
+          `Resend rejected email for lead ${lead.id} (${lead.email}): ${
+            emailResponse.error?.message || 'no email id returned'
+          }`
+        )
+        await pool.query('UPDATE leads SET status = $1 WHERE id = $2', ['failed', lead.id])
+        continue
+      }
+
+      const resendId = emailResponse.data.id
 
       await pool.query(
         `UPDATE leads SET initial_sent_at = NOW(), initial_resend_id = $1, status = 'sent' WHERE id = $2`,

@@ -56,7 +56,9 @@ export async function discoverBusinesses(
   const data = (await response.json()) as PlacesSearchResponse
   const places = data.places || []
 
-  const validPlaces = places.filter((p) => p.id && p.displayName?.text)
+  const validPlaces = places.filter(
+    (p) => p.id && p.displayName?.text && p.websiteUri && p.websiteUri.trim() !== ''
+  )
   if (validPlaces.length === 0) {
     return 0
   }
@@ -68,7 +70,14 @@ export async function discoverBusinesses(
     'SELECT place_id FROM leads WHERE place_id = ANY($1)',
     [placeIds]
   )
-  const existingSet = new Set(existingResult.rows.map((row) => row.place_id))
+  const suppressedResult = await pool.query(
+    'SELECT place_id FROM suppressed_places WHERE place_id = ANY($1)',
+    [placeIds]
+  )
+  const existingSet = new Set([
+    ...existingResult.rows.map((row) => row.place_id),
+    ...suppressedResult.rows.map((row) => row.place_id),
+  ])
 
   let newLeadsCount = 0
 

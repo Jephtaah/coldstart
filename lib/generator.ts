@@ -7,7 +7,7 @@ export async function generateEmail(leadId: string): Promise<boolean> {
   }
 
   const result = await pool.query(
-    'SELECT business_name, website, email, scraped_content FROM leads WHERE id = $1',
+    'SELECT business_name, website, email, scraped_content, place_id FROM leads WHERE id = $1',
     [leadId]
   )
 
@@ -17,7 +17,13 @@ export async function generateEmail(leadId: string): Promise<boolean> {
 
   const lead = result.rows[0]
   if (!lead.email || lead.email.trim() === '') {
-    await pool.query('UPDATE leads SET status = $1 WHERE id = $2', ['failed', leadId])
+    if (lead.place_id) {
+      await pool.query(
+        `INSERT INTO suppressed_places (place_id) VALUES ($1) ON CONFLICT (place_id) DO NOTHING`,
+        [lead.place_id]
+      )
+    }
+    await pool.query('DELETE FROM leads WHERE id = $1', [leadId])
     return false
   }
 
