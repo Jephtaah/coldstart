@@ -514,7 +514,7 @@ export default function DashboardClient({
                             const info = seoScoreInfo(lead.seo_score)
                             return (
                               <span
-                                className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium capitalize border ${info.className}`}
+                                className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium capitalize border whitespace-nowrap ${info.className}`}
                                 title={lead.seo_flags ? lead.seo_flags.split(',').join(', ') : 'No SEO flags recorded'}
                               >
                                 <span className={`w-1.5 h-1.5 rounded-full ${info.dot}`} />
