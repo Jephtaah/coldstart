@@ -12,6 +12,9 @@ export async function POST(request: Request) {
       if (isNaN(cap) || cap < 1) {
         return NextResponse.json({ error: 'Invalid daily cap' }, { status: 400 })
       }
+      if (cap > 100) {
+        return NextResponse.json({ error: 'Daily cap cannot exceed Resend\'s 100/day free tier ceiling' }, { status: 400 })
+      }
       const isPaused = Boolean(paused)
 
       await pool.query(

@@ -1,6 +1,6 @@
 import { pool } from './db'
 import { Resend } from 'resend'
-import { MAX_SEO_SCORE_TO_SEND } from './constants'
+import { MAX_SEO_SCORE_TO_SEND, MAX_INITIAL_SENDS_PER_DAY } from './constants'
 
 export async function sendBatch(): Promise<number> {
   const apiKey = process.env.RESEND_API_KEY
@@ -31,7 +31,11 @@ export async function sendBatch(): Promise<number> {
     `SELECT COUNT(*) FROM leads WHERE initial_sent_at >= CURRENT_DATE`
   )
   const sentTodayCount = parseInt(countResult.rows[0].count, 10) || 0
-  const remaining = dailyCap - sentTodayCount
+  // Reserve headroom for follow-ups: initial sends never exceed the dedicated cap.
+  const remaining = Math.min(
+    dailyCap - sentTodayCount,
+    MAX_INITIAL_SENDS_PER_DAY - sentTodayCount
+  )
 
   if (remaining <= 0) {
     return 0

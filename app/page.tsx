@@ -20,7 +20,7 @@ export default async function Page() {
     pool.query('select status, count(*)::int as count from leads group by status'),
   ])
 
-  const settings = settingsRes.rows[0] || { daily_cap: 90, paused: false, last_run_at: null }
+  const settings = settingsRes.rows[0] || { daily_cap: 100, paused: false, last_run_at: null }
   const niches = nichesRes.rows
   const leads = leadsRes.rows
   const rawStats = statsRes.rows[0] || { total: 0, sent_total: 0, opened_total: 0, sent_today: 0 }
