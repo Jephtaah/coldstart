@@ -6,7 +6,7 @@ import { generateEmail } from '@/lib/generator'
 import { sendBatch } from '@/lib/sender'
 import { sendFollowUps } from '@/lib/followup'
 import { expandNiches } from '@/lib/expansion'
-import { MAX_SEO_SCORE_TO_SEND } from '@/lib/constants'
+import { MAX_SEO_SCORE_TO_SEND, MAX_INITIAL_SENDS_PER_DAY, MAX_FOLLOWUPS_PER_DAY } from '@/lib/constants'
 import { Resend } from 'resend'
 
 export const dynamic = 'force-dynamic'
@@ -23,7 +23,12 @@ interface StageResult {
   error?: string
 }
 
-async function getRemainingCap(): Promise<number> {
+interface RemainingCap {
+  initial: number
+  followups: number
+}
+
+async function getRemainingCap(): Promise<RemainingCap> {
   const settingsResult = await pool.query('SELECT daily_cap, paused FROM settings WHERE id = 1')
   if (settingsResult.rows.length === 0) {
     throw new Error('Settings table row with id = 1 not found.')
@@ -31,30 +36,41 @@ async function getRemainingCap(): Promise<number> {
 
   const settings = settingsResult.rows[0]
   if (settings.paused) {
-    return 0
+    return { initial: 0, followups: 0 }
   }
 
   const countResult = await pool.query(
-    `SELECT COUNT(*) FROM leads WHERE initial_sent_at >= CURRENT_DATE OR followup_sent_at >= CURRENT_DATE`
+    `SELECT
+       (SELECT COUNT(*) FROM leads WHERE initial_sent_at >= CURRENT_DATE) AS initial,
+       (SELECT COUNT(*) FROM leads WHERE followup_sent_at >= CURRENT_DATE) AS followups`
   )
-  const sentTodayCount = parseInt(countResult.rows[0].count, 10) || 0
-  return settings.daily_cap - sentTodayCount
+  const initialSentToday = parseInt(countResult.rows[0].initial, 10) || 0
+  const followupsSentToday = parseInt(countResult.rows[0].followups, 10) || 0
+
+  return {
+    initial: Math.min(settings.daily_cap, MAX_INITIAL_SENDS_PER_DAY) - initialSentToday,
+    followups: MAX_FOLLOWUPS_PER_DAY - followupsSentToday,
+  }
 }
 
 export async function GET() {
   const results: Record<string, StageResult> = {}
 
-  // Compute today's remaining send budget. If the daily cap is already spent,
-  // skip the entire run so the pipeline waits for the next day.
+  // Compute today's remaining send budgets. Initial sends are limited by the
+  // daily capacity cap; follow-ups have their own separate budget. If both are
+  // spent, skip the run so the pipeline waits for the next day.
   let remaining = Number.MAX_SAFE_INTEGER
+  let remainingFollowups = Number.MAX_SAFE_INTEGER
   try {
-    remaining = await getRemainingCap()
+    const cap = await getRemainingCap()
+    remaining = cap.initial
+    remainingFollowups = cap.followups
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err)
     results.cap = { success: false, error: message }
   }
 
-  if (remaining <= 0) {
+  if (remaining <= 0 && remainingFollowups <= 0) {
     await pool.query('UPDATE settings SET last_run_at = NOW() WHERE id = 1')
     return NextResponse.json(
       {

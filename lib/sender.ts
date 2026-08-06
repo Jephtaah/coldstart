@@ -31,7 +31,8 @@ export async function sendBatch(): Promise<number> {
     `SELECT COUNT(*) FROM leads WHERE initial_sent_at >= CURRENT_DATE`
   )
   const sentTodayCount = parseInt(countResult.rows[0].count, 10) || 0
-  // Reserve headroom for follow-ups: initial sends never exceed the dedicated cap.
+  // Initial sends are capped by the daily capacity setting and never exceed
+  // the hard ceiling. Follow-ups have their own separate daily budget.
   const remaining = Math.min(
     dailyCap - sentTodayCount,
     MAX_INITIAL_SENDS_PER_DAY - sentTodayCount

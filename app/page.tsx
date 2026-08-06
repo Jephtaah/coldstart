@@ -14,7 +14,7 @@ export default async function Page() {
         coalesce(count(*), 0) as total,
         coalesce(sum(case when status = 'sent' or status = 'followed_up' then 1 else 0 end), 0) as sent_total,
         coalesce(sum(case when initial_opened_at is not null or followup_opened_at is not null then 1 else 0 end), 0) as opened_total,
-        coalesce(sum(case when initial_sent_at >= current_date then 1 else 0 end), 0) as sent_today
+        coalesce(sum(case when initial_sent_at >= current_date or followup_sent_at >= current_date then 1 else 0 end), 0) as sent_today
       from leads
     `),
     pool.query('select status, count(*)::int as count from leads group by status'),

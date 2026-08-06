@@ -801,7 +801,7 @@ export default function DashboardClient({
                   onChange={(e) => setDailyCap(parseInt(e.target.value, 10) || 1)}
                   className="w-full px-3.5 py-2.5 text-sm bg-white border border-[#D9D9D3] rounded-xl focus:outline-none focus:ring-2 focus:ring-[#141413]/20 focus:border-[#141413]"
                 />
-                <p className="text-xs text-[#8C8C85] mt-1.5">Initial sends are capped at 50/day; follow-ups use the remaining budget. Total is hard-capped at Resend&apos;s 100/day free tier ceiling.</p>
+                <p className="text-xs text-[#8C8C85] mt-1.5">Applies to initial sends only and does not count follow-ups. Initial sends are hard-capped at 50/day; follow-ups run on a separate 50/day budget. Combined total stays within Resend&apos;s 100/day free tier ceiling.</p>
               </div>
 
               <div className="flex items-center justify-between p-5 bg-[#FAFAF7] rounded-xl border border-[#E6E6DF]">

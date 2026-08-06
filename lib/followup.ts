@@ -1,5 +1,6 @@
 import { pool } from './db'
 import { Resend } from 'resend'
+import { MAX_FOLLOWUPS_PER_DAY } from './constants'
 
 export async function sendFollowUps(): Promise<number> {
   const apiKey = process.env.DEEPSEEK_API_KEY || process.env.AI_API_KEY
@@ -17,7 +18,7 @@ export async function sendFollowUps(): Promise<number> {
   const resend = new Resend(resendApiKey)
 
   // 1. Check settings table
-  const settingsResult = await pool.query('SELECT daily_cap, paused FROM settings WHERE id = 1')
+  const settingsResult = await pool.query('SELECT paused FROM settings WHERE id = 1')
   if (settingsResult.rows.length === 0) {
     throw new Error('Settings table row with id = 1 not found.')
   }
@@ -27,14 +28,13 @@ export async function sendFollowUps(): Promise<number> {
     return 0
   }
 
-  const dailyCap = settings.daily_cap
-
-  // 2. Count today's combined initial + follow-up sends (UTC date)
+  // 2. Count today's follow-up sends (UTC date). Follow-ups have their own
+  //    daily budget, separate from the initial-send capacity cap.
   const countResult = await pool.query(
-    `SELECT COUNT(*) FROM leads WHERE initial_sent_at >= CURRENT_DATE OR followup_sent_at >= CURRENT_DATE`
+    `SELECT COUNT(*) FROM leads WHERE followup_sent_at >= CURRENT_DATE`
   )
   const sentTodayCount = parseInt(countResult.rows[0].count, 10) || 0
-  const remaining = dailyCap - sentTodayCount
+  const remaining = MAX_FOLLOWUPS_PER_DAY - sentTodayCount
 
   if (remaining <= 0) {
     return 0
