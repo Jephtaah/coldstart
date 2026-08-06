@@ -10,6 +10,8 @@ interface Lead {
   website: string | null
   email: string | null
   status: string
+  seo_score: number | null
+  seo_flags: string | null
   generated_subject: string | null
   generated_body: string | null
   followup_subject: string | null
@@ -270,6 +272,19 @@ export default function DashboardClient({
   // Calculate opening rate
   const openRate = stats.sent_total > 0 ? ((stats.opened_total / stats.sent_total) * 100).toFixed(1) : '0.0'
 
+  function seoScoreInfo(score: number | null) {
+    if (score === null) {
+      return { label: '—', className: 'bg-[#F0F0EC] text-[#8C8C85] border-[#D9D9D3]', dot: 'bg-[#C7C7C0]' }
+    }
+    if (score <= 40) {
+      return { label: `${score} · Weak`, className: 'bg-rose-50 text-rose-800 border-rose-200', dot: 'bg-rose-600' }
+    }
+    if (score <= 70) {
+      return { label: `${score} · Fair`, className: 'bg-amber-50 text-amber-800 border-amber-200', dot: 'bg-amber-600' }
+    }
+    return { label: `${score} · Solid`, className: 'bg-emerald-50 text-emerald-800 border-emerald-200', dot: 'bg-emerald-600' }
+  }
+
   return (
     <div className="min-h-screen bg-[#F8F8F5] text-[#141413] font-sans selection:bg-[#141413] selection:text-[#F8F8F5]">
       {/* Editorial Top Header */}
@@ -445,6 +460,7 @@ export default function DashboardClient({
                   <tr>
                     <th className="px-6 py-3.5 font-medium w-[30%] min-w-[220px]">Business / Location</th>
                     <th className="px-6 py-3.5 font-medium w-[11%] min-w-[115px]">Pipeline Status</th>
+                    <th className="px-6 py-3.5 font-medium w-[10%] min-w-[110px]">SEO Weakness</th>
                     <th className="px-6 py-3.5 font-medium w-[17%] min-w-[150px]">Website</th>
                     <th className="px-6 py-3.5 font-medium w-[22%] min-w-[180px]">Email Address</th>
                     <th className="px-6 py-3.5 font-medium w-[11%] min-w-[110px]">Sent Timestamp</th>
@@ -455,7 +471,7 @@ export default function DashboardClient({
                 <tbody className="divide-y divide-[#EFEFED]">
                   {filteredLeads.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="px-6 py-12 text-center text-[#71716B]">
+                      <td colSpan={8} className="px-6 py-12 text-center text-[#71716B]">
                         <div className="max-w-xs mx-auto space-y-2">
                           <p className="font-medium text-[#383833]">No leads found matching current filter</p>
                           <p className="text-xs text-[#8C8C85]">Try adjusting your search query or status filter above.</p>
@@ -492,6 +508,20 @@ export default function DashboardClient({
                             }`} />
                             {lead.status.replace('_', ' ')}
                           </span>
+                        </td>
+                        <td className="px-6 py-4">
+                          {(() => {
+                            const info = seoScoreInfo(lead.seo_score)
+                            return (
+                              <span
+                                className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium capitalize border ${info.className}`}
+                                title={lead.seo_flags ? lead.seo_flags.split(',').join(', ') : 'No SEO flags recorded'}
+                              >
+                                <span className={`w-1.5 h-1.5 rounded-full ${info.dot}`} />
+                                {info.label}
+                              </span>
+                            )
+                          })()}
                         </td>
                         <td className="px-6 py-4 font-mono text-xs text-[#595955]">
                           {lead.website ? (

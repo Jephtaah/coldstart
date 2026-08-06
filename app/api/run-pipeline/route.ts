@@ -124,7 +124,7 @@ export async function GET() {
   // Stage 2: Scraping
   try {
     const leadsResult = await pool.query(
-      'SELECT id FROM leads WHERE status = $1 LIMIT $2',
+      'SELECT id FROM leads WHERE status = $1 ORDER BY seo_score ASC NULLS LAST LIMIT $2',
       ['new', MAX_SCRAPES_PER_RUN]
     )
     let scrapedCount = 0
@@ -153,7 +153,7 @@ export async function GET() {
   // Stage 3: Generation
   try {
     const leadsResult = await pool.query(
-      'SELECT id FROM leads WHERE status = $1 LIMIT $2',
+      'SELECT id FROM leads WHERE status = $1 ORDER BY seo_score ASC NULLS LAST LIMIT $2',
       ['scraped', MAX_GENERATES_PER_RUN]
     )
     let generatedCount = 0

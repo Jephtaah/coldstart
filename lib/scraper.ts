@@ -1,5 +1,6 @@
 import { pool } from './db'
 import * as cheerio from 'cheerio'
+import { scoreSiteSignals, mergeSeoScores, DEFAULT_SEO_SCORE, type SiteSignals } from './seo'
 
 const EMAIL_REGEX = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g
 
@@ -18,7 +19,9 @@ function extractEmails(text: string): string[] {
   )
 }
 
-async function fetchPageTextAndEmails(url: string): Promise<{ text: string; emails: string[] }> {
+async function fetchPageTextAndEmails(
+  url: string
+): Promise<{ text: string; emails: string[]; siteSignals: SiteSignals }> {
   let formattedUrl = url.trim()
   if (!/^https?:\/\//i.test(formattedUrl)) {
     formattedUrl = 'https://' + formattedUrl
@@ -70,9 +73,18 @@ async function fetchPageTextAndEmails(url: string): Promise<{ text: string; emai
 
     const allEmails = Array.from(new Set([...mailtoEmails, ...textEmails]))
 
+    const siteSignals: SiteSignals = {
+      title: $('title').first().text().trim(),
+      metaDescription: $('meta[name="description"]').first().attr('content')?.trim() || '',
+      hasViewport: $('meta[name="viewport"]').length > 0,
+      h1Count: $('h1').length,
+      bodyWordCount: bodyText ? bodyText.split(/\s+/).length : 0,
+    }
+
     return {
       text: bodyText.slice(0, 3000),
       emails: allEmails,
+      siteSignals,
     }
   } catch (error) {
     clearTimeout(timeoutId)
@@ -82,7 +94,7 @@ async function fetchPageTextAndEmails(url: string): Promise<{ text: string; emai
 
 export async function scrapeWebsite(leadId: string): Promise<boolean> {
   const result = await pool.query(
-    'SELECT website, email, business_name, address, place_id FROM leads WHERE id = $1',
+    'SELECT website, email, business_name, address, place_id, seo_score, seo_flags FROM leads WHERE id = $1',
     [leadId]
   )
 
@@ -95,6 +107,11 @@ export async function scrapeWebsite(leadId: string): Promise<boolean> {
   const existingEmail = lead.email
   const businessName = lead.business_name || 'Unknown Business'
   const address = lead.address || 'Unknown Address'
+  const existingSeoScore = lead.seo_score == null ? DEFAULT_SEO_SCORE : Number(lead.seo_score)
+  const existingSeoFlags: string[] =
+    typeof lead.seo_flags === 'string' && lead.seo_flags.trim() !== ''
+      ? lead.seo_flags.split(',')
+      : []
 
   async function discardLead() {
     if (lead.place_id) {
@@ -112,7 +129,7 @@ export async function scrapeWebsite(leadId: string): Promise<boolean> {
   }
 
   try {
-    const { text, emails } = await fetchPageTextAndEmails(website)
+    const { text, emails, siteSignals } = await fetchPageTextAndEmails(website)
     let bestEmail = existingEmail
     if (!bestEmail && emails.length > 0) {
       bestEmail = emails[0]
@@ -125,9 +142,15 @@ export async function scrapeWebsite(leadId: string): Promise<boolean> {
 
     const scrapedContent = text || `Business Name: ${businessName}\nAddress: ${address}\nWebsite: ${website}`
 
+    const siteScore = scoreSiteSignals(siteSignals)
+    const mergedScore = mergeSeoScores(existingSeoScore, siteScore.score)
+    const combinedFlags = Array.from(
+      new Set([...existingSeoFlags, ...siteScore.flags])
+    ).join(',')
+
     await pool.query(
-      `UPDATE leads SET scraped_content = $1, email = $2, status = 'scraped' WHERE id = $3`,
-      [scrapedContent, bestEmail, leadId]
+      `UPDATE leads SET scraped_content = $1, email = $2, status = 'scraped', seo_score = $3, seo_flags = $4 WHERE id = $5`,
+      [scrapedContent, bestEmail, mergedScore, combinedFlags, leadId]
     )
     return true
   } catch {

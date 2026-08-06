@@ -21,3 +21,6 @@ export const DEFAULT_CITIES = [
   'Charlotte, NC',
   'Seattle, WA',
 ]
+
+export const MAX_PLACES_PAGES_PER_NICHE = 5
+export const PLACES_PAGES_TO_SKIP = 2

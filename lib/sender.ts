@@ -36,9 +36,9 @@ export async function sendBatch(): Promise<number> {
     return 0
   }
 
-  // 3. Fetch up to 'remaining' leads with status = 'generated'
+  // 3. Fetch up to 'remaining' leads with status = 'generated', weakest SEO first
   const leadsResult = await pool.query(
-    `SELECT id, email, generated_subject, generated_body FROM leads WHERE status = 'generated' LIMIT $1`,
+    `SELECT id, email, generated_subject, generated_body FROM leads WHERE status = 'generated' ORDER BY seo_score ASC NULLS LAST LIMIT $1`,
     [remaining]
   )
 
