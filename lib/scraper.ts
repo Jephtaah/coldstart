@@ -49,8 +49,14 @@ async function fetchPageTextAndEmails(url: string): Promise<{ text: string; emai
     $('a[href^="mailto:"]').each((_, el) => {
       const href = $(el).attr('href')
       if (href) {
-        const emailPart = href.replace(/^mailto:/i, '').split('?')[0].trim()
-        if (emailPart) {
+        const rawPart = href.replace(/^mailto:/i, '').split('?')[0].trim()
+        if (rawPart) {
+          let emailPart = rawPart
+          try {
+            emailPart = decodeURIComponent(rawPart).trim()
+          } catch {
+            // leave the raw value if it is not valid URL-encoding
+          }
           mailtoEmails.push(emailPart)
         }
       }

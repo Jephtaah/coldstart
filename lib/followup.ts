@@ -93,7 +93,7 @@ Previous Subject: ${lead.generated_subject || ''}
               Authorization: `Bearer ${apiKey}`,
             },
             body: JSON.stringify({
-              model: 'deepseek-chat',
+              model: 'deepseek-v4-flash',
               messages: [
                 { role: 'system', content: systemPrompt },
                 { role: 'user', content: `Generate the follow-up email for ${businessName}.` },
