@@ -10,6 +10,10 @@ import { Resend } from 'resend'
 
 export const dynamic = 'force-dynamic'
 
+const MAX_NICHES_PER_RUN = 5
+const MAX_SCRAPES_PER_RUN = 12
+const MAX_GENERATES_PER_RUN = 8
+
 interface StageResult {
   success: boolean
   count?: number
@@ -23,8 +27,8 @@ export async function GET() {
   // Stage 1: Discovery
   try {
     const nichesResult = await pool.query(
-      'SELECT id, label, city FROM niches WHERE status = $1',
-      ['active']
+      'SELECT id, label, city FROM niches WHERE status = $1 LIMIT $2',
+      ['active', MAX_NICHES_PER_RUN]
     )
     let totalDiscovered = 0
     const errors: string[] = []
@@ -71,8 +75,8 @@ export async function GET() {
   // Stage 2: Scraping
   try {
     const leadsResult = await pool.query(
-      'SELECT id FROM leads WHERE status = $1',
-      ['new']
+      'SELECT id FROM leads WHERE status = $1 LIMIT $2',
+      ['new', MAX_SCRAPES_PER_RUN]
     )
     let scrapedCount = 0
     const errors: string[] = []
@@ -100,8 +104,8 @@ export async function GET() {
   // Stage 3: Generation
   try {
     const leadsResult = await pool.query(
-      'SELECT id FROM leads WHERE status = $1',
-      ['scraped']
+      'SELECT id FROM leads WHERE status = $1 LIMIT $2',
+      ['scraped', MAX_GENERATES_PER_RUN]
     )
     let generatedCount = 0
     const errors: string[] = []
@@ -155,6 +159,25 @@ export async function GET() {
     results.settings = { success: false, error: message }
   }
 
+  // Determine if more work remains so the caller can loop until done
+  let hasRemaining = false
+  try {
+    const pendingResult = await pool.query(
+      `SELECT
+         (SELECT COUNT(*) FROM leads WHERE status = 'new') AS to_scrape,
+         (SELECT COUNT(*) FROM leads WHERE status = 'scraped') AS to_generate,
+         (SELECT COUNT(*) FROM niches WHERE status = 'active') AS active_niches`
+    )
+    const pending = pendingResult.rows[0]
+    hasRemaining =
+      parseInt(pending.to_scrape, 10) > 0 ||
+      parseInt(pending.to_generate, 10) > 0 ||
+      parseInt(pending.active_niches, 10) > 0
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err)
+    results.settings = { success: false, error: message }
+  }
+
   // Check for failures and send alert email if configured
   const failedStages = Object.entries(results).filter(([_, res]) => !res.success || res.error)
   if (failedStages.length > 0 && process.env.RESEND_API_KEY && process.env.REPLY_TO_EMAIL) {
@@ -176,5 +199,5 @@ export async function GET() {
     }
   }
 
-  return NextResponse.json({ success: true, results }, { status: 200 })
+  return NextResponse.json({ success: true, hasRemaining, results }, { status: 200 })
 }

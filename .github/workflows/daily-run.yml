@@ -9,5 +9,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Call pipeline endpoint
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
         run: |
-          curl -f -X GET "${{ secrets.APP_URL }}/api/run-pipeline"
+          for i in $(seq 1 40); do
+            echo "--- pipeline iteration $i ---"
+            RESPONSE=$(curl -fsS -X GET "$APP_URL/api/run-pipeline" || true)
+            if [ -z "$RESPONSE" ]; then
+              echo "No response, retrying..."
+              sleep 15
+              continue
+            fi
+            echo "$RESPONSE"
+            if ! echo "$RESPONSE" | grep -q '"hasRemaining":true'; then
+              echo "Pipeline finished."
+              exit 0
+            fi
+            echo "More work remaining, waiting 15s before next iteration..."
+            sleep 15
+          done
+          echo "Pipeline reached max iterations; run again to continue remaining work."
+          exit 0
