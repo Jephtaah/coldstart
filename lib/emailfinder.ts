@@ -1,6 +1,7 @@
 import { pool } from './db'
 import * as cheerio from 'cheerio'
 import { extractEmails, extractEmailsFromHtml } from './scraper'
+import { isSuppressedEmail } from './suppression'
 import { EMAIL_SEARCH_RESULT_PAGES } from './constants'
 
 const DDG_HTML_URL = 'https://html.duckduckgo.com/html/'
@@ -110,6 +111,11 @@ export async function sourceNoWebsiteEmails(max: number): Promise<{ sourced: num
     let email: string | null = null
     try {
       email = await findEmailForBusiness(businessName, city)
+      // Skip addresses that already bounced/complained so a dead address can't
+      // be re-sourced for another lead.
+      if (email && (await isSuppressedEmail(email))) {
+        email = null
+      }
     } catch (err) {
       console.error(`Email search failed for lead ${lead.id} (${businessName}):`, err)
     }

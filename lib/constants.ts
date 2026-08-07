@@ -30,3 +30,6 @@ export const MAX_FOLLOWUPS_PER_DAY = 50
 export const MAX_DAILY_CAP = 100
 export const MAX_EMAIL_SEARCHES_PER_RUN = 8
 export const EMAIL_SEARCH_RESULT_PAGES = 4
+// Alert thresholds for send-health monitoring (rolling 24h window).
+export const BOUNCE_ALERT_THRESHOLD = 5
+export const COMPLAINT_ALERT_THRESHOLD = 1

@@ -12,6 +12,8 @@ import {
   MAX_INITIAL_SENDS_PER_DAY,
   MAX_FOLLOWUPS_PER_DAY,
   MAX_EMAIL_SEARCHES_PER_RUN,
+  BOUNCE_ALERT_THRESHOLD,
+  COMPLAINT_ALERT_THRESHOLD,
 } from '@/lib/constants'
 import { Resend } from 'resend'
 
@@ -27,6 +29,8 @@ interface StageResult {
   count?: number
   processed?: number
   error?: string
+  bounces?: number
+  complaints?: number
 }
 
 interface RemainingCap {
@@ -253,6 +257,37 @@ export async function GET() {
     results.followups = { success: false, error: message }
   }
 
+  // Stage 5b: Send-health monitor. Surfaces a rising bounce/complaint rate so
+  // the alert email fires before a fresh domain's reputation degrades unseen.
+  try {
+    const monitorResult = await pool.query(
+      `SELECT
+         COUNT(*) FILTER (WHERE reason = 'bounce' AND created_at > NOW() - INTERVAL '24 hours') AS bounces,
+         COUNT(*) FILTER (WHERE reason = 'complaint' AND created_at > NOW() - INTERVAL '24 hours') AS complaints
+       FROM suppressed_emails`
+    )
+    const bounces = parseInt(monitorResult.rows[0].bounces, 10) || 0
+    const complaints = parseInt(monitorResult.rows[0].complaints, 10) || 0
+
+    const issues: string[] = []
+    if (bounces >= BOUNCE_ALERT_THRESHOLD) {
+      issues.push(`${bounces} bounces in the last 24 hours (threshold ${BOUNCE_ALERT_THRESHOLD})`)
+    }
+    if (complaints >= COMPLAINT_ALERT_THRESHOLD) {
+      issues.push(
+        `${complaints} spam complaint(s) in the last 24 hours (threshold ${COMPLAINT_ALERT_THRESHOLD})`
+      )
+    }
+
+    results.sendHealth =
+      issues.length === 0
+        ? { success: true, bounces, complaints }
+        : { success: false, bounces, complaints, error: issues.join('; ') }
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err)
+    results.sendHealth = { success: false, error: message }
+  }
+
   // Stage 6: Update last_run_at
   try {
     await pool.query(
@@ -290,12 +325,14 @@ export async function GET() {
     try {
       const resend = new Resend(process.env.RESEND_API_KEY)
       const senderDomain = process.env.SENDER_DOMAIN || 'example.com'
+      const senderName = process.env.SENDER_NAME
+      const fromEmail = senderName ? `${senderName} <outreach@${senderDomain}>` : `outreach@${senderDomain}`
       const errorSummary = failedStages
         .map(([stage, res]) => `- ${stage}: ${res.error || 'Failed'}`)
         .join('\n')
 
       await resend.emails.send({
-        from: `outreach@${senderDomain}`,
+        from: fromEmail,
         to: process.env.REPLY_TO_EMAIL,
         subject: '[ColdStart Alert] Pipeline Run Encountered Errors',
         text: `The cold outreach pipeline ran on ${new Date().toISOString()} with errors in the following stages:\n\n${errorSummary}\n\nFull results:\n${JSON.stringify(results, null, 2)}`,
