@@ -4,6 +4,13 @@ on:
     - cron: '0 13 * * *'  # 13:00 UTC daily
   workflow_dispatch: {}     # lets you trigger it manually from GitHub's Actions tab too
 
+# Only ever run one pipeline at a time: if a manual dispatch fires while the
+# scheduled run is mid-drain, it waits instead of overlapping. Overlapping
+# runs could both pick the same queued lead and send it twice.
+concurrency:
+  group: daily-outreach
+  cancel-in-progress: false
+
 jobs:
   run:
     runs-on: ubuntu-latest

@@ -12,6 +12,8 @@ import {
   MAX_INITIAL_SENDS_PER_DAY,
   MAX_FOLLOWUPS_PER_DAY,
   MAX_EMAIL_SEARCHES_PER_RUN,
+  MAX_SENDS_PER_RUN,
+  MAX_FOLLOWUPS_PER_RUN,
   BOUNCE_ALERT_THRESHOLD,
   COMPLAINT_ALERT_THRESHOLD,
 } from '@/lib/constants'
@@ -63,6 +65,117 @@ async function getRemainingCap(): Promise<RemainingCap> {
   }
 }
 
+async function runSendHealthMonitor(): Promise<StageResult> {
+  try {
+    const monitorResult = await pool.query(
+      `SELECT
+         COUNT(*) FILTER (WHERE reason = 'bounce' AND created_at > NOW() - INTERVAL '24 hours') AS bounces,
+         COUNT(*) FILTER (WHERE reason = 'complaint' AND created_at > NOW() - INTERVAL '24 hours') AS complaints
+       FROM suppressed_emails`
+    )
+    const bounces = parseInt(monitorResult.rows[0].bounces, 10) || 0
+    const complaints = parseInt(monitorResult.rows[0].complaints, 10) || 0
+
+    const issues: string[] = []
+    if (bounces >= BOUNCE_ALERT_THRESHOLD) {
+      issues.push(`${bounces} bounces in the last 24 hours (threshold ${BOUNCE_ALERT_THRESHOLD})`)
+    }
+    if (complaints >= COMPLAINT_ALERT_THRESHOLD) {
+      issues.push(
+        `${complaints} spam complaint(s) in the last 24 hours (threshold ${COMPLAINT_ALERT_THRESHOLD})`
+      )
+    }
+
+    return issues.length === 0
+      ? { success: true, bounces, complaints }
+      : { success: false, bounces, complaints, error: issues.join('; ') }
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err)
+    return { success: false, error: message }
+  }
+}
+
+async function updateLastRunAt(): Promise<StageResult> {
+  try {
+    await pool.query('UPDATE settings SET last_run_at = NOW() WHERE id = 1')
+    return { success: true }
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err)
+    return { success: false, error: message }
+  }
+}
+
+async function computeHasRemaining(
+  remaining: number,
+  remainingFollowups: number
+): Promise<boolean> {
+  const pendingResult = await pool.query(
+    `SELECT
+       (SELECT COUNT(*) FROM leads WHERE status = 'new') AS to_scrape,
+       (SELECT COUNT(*) FROM leads WHERE status = 'scraped') AS to_generate,
+       (SELECT COUNT(*) FROM leads
+        WHERE status = 'generated' AND (seo_score IS NULL OR seo_score < $1)
+          AND NOT EXISTS (SELECT 1 FROM suppressed_emails se WHERE se.email = lower(leads.email))) AS to_send,
+       (SELECT COUNT(*) FROM leads
+        WHERE status = 'sent' AND initial_sent_at <= NOW() - INTERVAL '7 days' AND followup_sent_at IS NULL
+          AND NOT EXISTS (SELECT 1 FROM suppressed_emails se WHERE se.email = lower(leads.email))) AS to_followup,
+       (SELECT COUNT(*) FROM niches WHERE status = 'active') AS active_niches`,
+    [MAX_SEO_SCORE_TO_SEND]
+  )
+  const pending = pendingResult.rows[0]
+  const hasSendWork = remaining > 0 && parseInt(pending.to_send, 10) > 0
+  const hasFollowupWork = remainingFollowups > 0 && parseInt(pending.to_followup, 10) > 0
+  const hasProduceWork =
+    remaining > 0 &&
+    (parseInt(pending.to_scrape, 10) > 0 ||
+      parseInt(pending.to_generate, 10) > 0 ||
+      parseInt(pending.active_niches, 10) > 0)
+  return hasSendWork || hasFollowupWork || hasProduceWork
+}
+
+async function sendErrorAlert(results: Record<string, StageResult>): Promise<void> {
+  const failedStages = Object.entries(results).filter(([, res]) => !res.success || res.error)
+  if (failedStages.length === 0 || !process.env.RESEND_API_KEY || !process.env.REPLY_TO_EMAIL) {
+    return
+  }
+
+  try {
+    const resend = new Resend(process.env.RESEND_API_KEY)
+    const senderDomain = process.env.SENDER_DOMAIN || 'example.com'
+    const senderName = process.env.SENDER_NAME
+    const fromEmail = senderName ? `${senderName} <outreach@${senderDomain}>` : `outreach@${senderDomain}`
+    const errorSummary = failedStages
+      .map(([stage, res]) => `- ${stage}: ${res.error || 'Failed'}`)
+      .join('\n')
+
+    await resend.emails.send({
+      from: fromEmail,
+      to: process.env.REPLY_TO_EMAIL,
+      subject: '[ColdStart Alert] Pipeline Run Encountered Errors',
+      text: `The cold outreach pipeline ran on ${new Date().toISOString()} with errors in the following stages:\n\n${errorSummary}\n\nFull results:\n${JSON.stringify(results, null, 2)}`,
+    })
+  } catch (alertErr) {
+    console.error('Failed to send pipeline error alert email:', alertErr)
+  }
+}
+
+async function getSendBacklog(): Promise<{ toSend: number; toFollowup: number }> {
+  const gateResult = await pool.query(
+    `SELECT
+       (SELECT COUNT(*) FROM leads
+        WHERE status = 'generated' AND (seo_score IS NULL OR seo_score < $1)
+          AND NOT EXISTS (SELECT 1 FROM suppressed_emails se WHERE se.email = lower(leads.email))) AS to_send,
+       (SELECT COUNT(*) FROM leads
+        WHERE status = 'sent' AND initial_sent_at <= NOW() - INTERVAL '7 days' AND followup_sent_at IS NULL
+          AND NOT EXISTS (SELECT 1 FROM suppressed_emails se WHERE se.email = lower(leads.email))) AS to_followup`,
+    [MAX_SEO_SCORE_TO_SEND]
+  )
+  return {
+    toSend: parseInt(gateResult.rows[0].to_send, 10) || 0,
+    toFollowup: parseInt(gateResult.rows[0].to_followup, 10) || 0,
+  }
+}
+
 export async function GET() {
   const results: Record<string, StageResult> = {}
 
@@ -93,6 +206,71 @@ export async function GET() {
     )
   }
 
+  // Send gate: when there is a backlog waiting to go out (generated leads
+  // within the cap, or follow-ups due), this invocation only drains a bounded
+  // sub-batch with 20-40s spacing and returns, letting the workflow loop come
+  // back for more. Production stages run only when the gate is clear, so a
+  // single invocation never both generates a large backlog and sends it.
+  let toSend = 0
+  let toFollowup = 0
+  try {
+    const backlog = await getSendBacklog()
+    toSend = backlog.toSend
+    toFollowup = backlog.toFollowup
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err)
+    results.gate = { success: false, error: message }
+    await sendErrorAlert(results)
+    return NextResponse.json({ success: false, error: message }, { status: 500 })
+  }
+
+  const canSendInitial = remaining > 0 && toSend > 0
+  const canSendFollowups = remainingFollowups > 0 && toFollowup > 0
+
+  if (canSendInitial || canSendFollowups) {
+    // Send mode: trickle out the backlog, never producing while a drain is
+    // underway so each invocation stays safely inside the function timeout.
+    if (canSendInitial) {
+      try {
+        const sentCount = await sendBatch(MAX_SENDS_PER_RUN)
+        results.sending = { success: true, processed: sentCount }
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err)
+        results.sending = { success: false, error: message }
+      }
+    }
+
+    if (canSendFollowups) {
+      try {
+        const followupCount = await sendFollowUps(MAX_FOLLOWUPS_PER_RUN)
+        results.followups = { success: true, processed: followupCount }
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err)
+        results.followups = { success: false, error: message }
+      }
+    }
+
+    results.sendHealth = await runSendHealthMonitor()
+    results.settings = await updateLastRunAt()
+
+    let hasRemaining = false
+    try {
+      hasRemaining = await computeHasRemaining(remaining, remainingFollowups)
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err)
+      results.settings = { success: false, error: message }
+    }
+
+    await sendErrorAlert(results)
+
+    return NextResponse.json(
+      { success: true, sendMode: true, hasRemaining, results },
+      { status: 200 }
+    )
+  }
+
+  // Produce mode: refill the pipeline. No sending happens here — newly
+  // generated leads are picked up by the send gate on a later invocation.
   // Stage 1: Discovery
   try {
     const nichesResult = await pool.query(
@@ -242,108 +420,18 @@ export async function GET() {
     results.generation = { success: false, error: message }
   }
 
-  // Stage 4: Sending Initial Batch
-  try {
-    const sentCount = await sendBatch()
-    results.sending = { success: true, processed: sentCount }
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err)
-    results.sending = { success: false, error: message }
-  }
+  results.sendHealth = await runSendHealthMonitor()
+  results.settings = await updateLastRunAt()
 
-  // Stage 5: Sending Follow-ups
-  try {
-    const followupCount = await sendFollowUps()
-    results.followups = { success: true, processed: followupCount }
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err)
-    results.followups = { success: false, error: message }
-  }
-
-  // Stage 5b: Send-health monitor. Surfaces a rising bounce/complaint rate so
-  // the alert email fires before a fresh domain's reputation degrades unseen.
-  try {
-    const monitorResult = await pool.query(
-      `SELECT
-         COUNT(*) FILTER (WHERE reason = 'bounce' AND created_at > NOW() - INTERVAL '24 hours') AS bounces,
-         COUNT(*) FILTER (WHERE reason = 'complaint' AND created_at > NOW() - INTERVAL '24 hours') AS complaints
-       FROM suppressed_emails`
-    )
-    const bounces = parseInt(monitorResult.rows[0].bounces, 10) || 0
-    const complaints = parseInt(monitorResult.rows[0].complaints, 10) || 0
-
-    const issues: string[] = []
-    if (bounces >= BOUNCE_ALERT_THRESHOLD) {
-      issues.push(`${bounces} bounces in the last 24 hours (threshold ${BOUNCE_ALERT_THRESHOLD})`)
-    }
-    if (complaints >= COMPLAINT_ALERT_THRESHOLD) {
-      issues.push(
-        `${complaints} spam complaint(s) in the last 24 hours (threshold ${COMPLAINT_ALERT_THRESHOLD})`
-      )
-    }
-
-    results.sendHealth =
-      issues.length === 0
-        ? { success: true, bounces, complaints }
-        : { success: false, bounces, complaints, error: issues.join('; ') }
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err)
-    results.sendHealth = { success: false, error: message }
-  }
-
-  // Stage 6: Update last_run_at
-  try {
-    await pool.query(
-      'UPDATE settings SET last_run_at = NOW() WHERE id = 1'
-    )
-    results.settings = { success: true }
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err)
-    results.settings = { success: false, error: message }
-  }
-
-  // Determine if more work remains so the caller can loop until done
   let hasRemaining = false
   try {
-    const pendingResult = await pool.query(
-      `SELECT
-         (SELECT COUNT(*) FROM leads WHERE status = 'new') AS to_scrape,
-         (SELECT COUNT(*) FROM leads WHERE status = 'scraped') AS to_generate,
-         (SELECT COUNT(*) FROM niches WHERE status = 'active') AS active_niches`
-    )
-    const pending = pendingResult.rows[0]
-    hasRemaining =
-      remaining > 0 &&
-      (parseInt(pending.to_scrape, 10) > 0 ||
-        parseInt(pending.to_generate, 10) > 0 ||
-        parseInt(pending.active_niches, 10) > 0)
+    hasRemaining = await computeHasRemaining(remaining, remainingFollowups)
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err)
     results.settings = { success: false, error: message }
   }
 
-  // Check for failures and send alert email if configured
-  const failedStages = Object.entries(results).filter(([, res]) => !res.success || res.error)
-  if (failedStages.length > 0 && process.env.RESEND_API_KEY && process.env.REPLY_TO_EMAIL) {
-    try {
-      const resend = new Resend(process.env.RESEND_API_KEY)
-      const senderDomain = process.env.SENDER_DOMAIN || 'example.com'
-      const senderName = process.env.SENDER_NAME
-      const fromEmail = senderName ? `${senderName} <outreach@${senderDomain}>` : `outreach@${senderDomain}`
-      const errorSummary = failedStages
-        .map(([stage, res]) => `- ${stage}: ${res.error || 'Failed'}`)
-        .join('\n')
-
-      await resend.emails.send({
-        from: fromEmail,
-        to: process.env.REPLY_TO_EMAIL,
-        subject: '[ColdStart Alert] Pipeline Run Encountered Errors',
-        text: `The cold outreach pipeline ran on ${new Date().toISOString()} with errors in the following stages:\n\n${errorSummary}\n\nFull results:\n${JSON.stringify(results, null, 2)}`,
-      })
-    } catch (alertErr) {
-      console.error('Failed to send pipeline error alert email:', alertErr)
-    }
-  }
+  await sendErrorAlert(results)
 
   return NextResponse.json({ success: true, hasRemaining, results }, { status: 200 })
 }

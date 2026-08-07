@@ -1,8 +1,9 @@
 import { pool } from './db'
 import { Resend } from 'resend'
 import { MAX_SEO_SCORE_TO_SEND, MAX_INITIAL_SENDS_PER_DAY } from './constants'
+import { toHtml, sendDelayMs, sleep } from './emailFormat'
 
-export async function sendBatch(): Promise<number> {
+export async function sendBatch(maxSends: number): Promise<number> {
   const apiKey = process.env.RESEND_API_KEY
   if (!apiKey) {
     throw new Error('RESEND_API_KEY is not set in environment variables.')
@@ -43,15 +44,17 @@ export async function sendBatch(): Promise<number> {
     return 0
   }
 
-  // 3. Fetch up to 'remaining' leads with status = 'generated', weakest SEO first,
+  // 3. Fetch up to 'maxSends' leads with status = 'generated', weakest SEO first,
   //    excluding anything at/above the SEO cutoff (defense in depth) and any
-  //    address that has bounced or complained before.
+  //    address that has bounced or complained before. The daily cap is still
+  //    enforced above; this bound keeps one invocation safely inside the
+  //    function timeout so the workflow loop can trickle the backlog out.
   const leadsResult = await pool.query(
     `SELECT id, email, generated_subject, generated_body FROM leads
      WHERE status = 'generated' AND (seo_score IS NULL OR seo_score < $2)
        AND NOT EXISTS (SELECT 1 FROM suppressed_emails se WHERE se.email = lower(leads.email))
      ORDER BY seo_score ASC NULLS LAST LIMIT $1`,
-    [remaining, MAX_SEO_SCORE_TO_SEND]
+    [Math.min(maxSends, remaining), MAX_SEO_SCORE_TO_SEND]
   )
 
   const leads = leadsResult.rows
@@ -68,13 +71,19 @@ export async function sendBatch(): Promise<number> {
     }
 
     try {
-      const emailPromise = resend.emails.send({
-        from: fromEmail,
-        to: lead.email,
-        subject: lead.generated_subject,
-        text: lead.generated_body,
-        replyTo: process.env.REPLY_TO_EMAIL,
-      })
+      await sleep(sendDelayMs())
+
+      const emailPromise = resend.emails.send(
+        {
+          from: fromEmail,
+          to: lead.email,
+          subject: lead.generated_subject,
+          text: lead.generated_body,
+          html: toHtml(lead.generated_body),
+          replyTo: process.env.REPLY_TO_EMAIL,
+        },
+        { idempotencyKey: `initial:${lead.id}` }
+      )
 
       const timeoutPromise = new Promise((_, reject) =>
         setTimeout(() => reject(new Error('Resend API timeout')), 10000)
