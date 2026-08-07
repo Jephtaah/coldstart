@@ -1,36 +1,70 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# ColdStart
 
-## Getting Started
+An autonomous cold outreach pipeline for a freelance web developer. It finds local businesses in US cities/industries that rank weak on Google, scores their SEO, finds their email, writes and sends a personalized cold email (with one automatic follow-up), and logs everything in a single-operator dashboard. No manual review step — the pipeline runs itself daily and the operator checks the dashboard when they want to.
 
-First, run the development server:
+## How it works
+
+Each scheduled run executes the full loop:
+
+1. **Discovery** — Google Places Text Search (New) for each active niche (`"<industry> in <city>"`). Results are paginated past the first two prominence-ranked pages so outreach targets the businesses that rank low on Google. New leads are inserted (deduped by `place_id`, with a `suppressed_places` list so dropped businesses are never re-added).
+2. **SEO scoring** — every lead is scored 0–100 on SEO weakness using a penalty model: `100 − pagePenalty − reviewPenalty − ratingPenalty − noWebsitePenalty`. Page depth dominates (page 1 → 0, page 3 → 40, page 5+ → 65). Leads scoring 65+ are suppressed/deleted before they ever reach generation. Scraping adds on-page signals (missing title, meta description, mobile viewport, H1, thin content), merged 60/40 site/discovery.
+3. **Scraping** — each lead's website is fetched (with timeout/redirect handling), text is extracted with Cheerio, and emails are pulled via regex + `mailto:` links. Leads with no discoverable email are deleted and suppressed.
+4. **Email sourcing for no-website leads** — businesses without a website get an email search (DuckDuckGo HTML) instead of scraping; found emails move the lead to `scraped` with a "build a website" pitch, otherwise the lead is deleted.
+5. **Generation** — DeepSeek writes a subject + body with strict style rules (no em dashes, no corporate filler, no template-triplet phrasing, one specific detail from the scraped content as the opener, 3–5 sentences), returning strict JSON.
+6. **Sending** — initial emails go out via Resend, weakest-SEO first, within the daily cap. Exactly one follow-up is sent 7+ days later per lead, on a separate daily budget.
+7. **Niche expansion** — when no active niches remain, the AI proposes 3–5 new industry/city combinations (with reasoning) so the pipeline keeps running on its own.
+
+Stage failures send an alert email to the operator instead of halting the run. Each stage is bounded per run (e.g. 5 niches, 12 scrapes, 8 generations, 8 email searches) so it fits inside Vercel's function timeout.
+
+## Tech stack
+
+- **Next.js 16** (App Router, TypeScript, Tailwind CSS v4) — dashboard + API routes
+- **Neon** (serverless Postgres) via plain `pg`, no ORM — 4 tables: `niches`, `leads`, `settings`, `suppressed_places`
+- **Google Places API (New)** — business discovery
+- **DeepSeek API** — email/follow-up generation and niche suggestion
+- **Resend** — email delivery + open-tracking webhook
+- **GitHub Actions** — daily cron trigger
+
+## Getting started
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000) — the dashboard loads directly (single operator, no auth).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+### Environment variables
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Create `.env.local` (never commit it):
 
-## Learn More
+| Variable | Purpose |
+|---|---|
+| `DATABASE_URL` | Neon Postgres connection string (pooled) |
+| `GOOGLE_PLACES_API_KEY` | Places API (New) key, restricted to Places API only |
+| `DEEPSEEK_API_KEY` | DeepSeek API key for email generation (or `AI_API_KEY`) |
+| `RESEND_API_KEY` | Resend key with sending access |
+| `SENDER_DOMAIN` | Verified sending domain (emails go out from `outreach@<domain>`) |
+| `REPLY_TO_EMAIL` | Where replies and pipeline failure alerts land |
 
-To learn more about Next.js, take a look at the following resources:
+The GitHub Actions schedule additionally uses an `APP_URL` repository secret pointing at the deployed app.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+The full account setup (domain, Resend verification, Google Cloud, Neon) and the exact SQL schema are documented in [`docs/build-guide.md`](docs/build-guide.md) and [`docs/prd.md`](docs/prd.md).
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Dashboard
 
-## Deploy on Vercel
+Three tabs, backed by `app/page.tsx` + `components/DashboardClient.tsx`:
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+- **Leads Directory** — all leads with pipeline status, SEO weakness badge, website, email, sent timestamps and open engagement; filterable by status (`new`, `scraped`, `generated`, `sent`, `followed_up`, `no_website`, `failed`), searchable, paginated (10/25/50 per page), with a modal to read each generated email.
+- **Targeting Matrix** — multi-select industries and US cities (minimum 3 of each enforced), the resulting `industries × cities` search-pool count, an add-custom-niche form, and the full niche registry with status/source/reasoning.
+- **Pipeline Settings** — daily send cap (1–100; initial sends hard-capped at 50/day, follow-ups on a separate 50/day budget) and an emergency pause toggle that halts all sending.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## API routes
+
+- `GET /api/run-pipeline` — runs the full pipeline loop; returns per-stage results and whether more work remains (the GitHub Action loops on this).
+- `POST /api/settings` — update settings, save targeting matrix, add a custom niche.
+- `POST /api/webhooks/resend` — records Resend `email.opened` events against leads.
+
+## Automation
+
+`.github/workflows/daily-run.yml` runs the pipeline via a daily cron (`13:00 UTC`) and calls `GET $APP_URL/api/run-pipeline` repeatedly until no work remains.
