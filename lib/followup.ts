@@ -14,7 +14,8 @@ export async function sendFollowUps(): Promise<number> {
   }
 
   const senderDomain = process.env.SENDER_DOMAIN || 'example.com'
-  const fromEmail = `outreach@${senderDomain}`
+  const senderName = process.env.SENDER_NAME
+  const fromEmail = senderName ? `${senderName} <outreach@${senderDomain}>` : `outreach@${senderDomain}`
   const resend = new Resend(resendApiKey)
 
   // 1. Check settings table
@@ -40,10 +41,12 @@ export async function sendFollowUps(): Promise<number> {
     return 0
   }
 
-  // 3. Find eligible leads: status = 'sent', initial_sent_at > 7 days ago, followup_sent_at is null
+  // 3. Find eligible leads: status = 'sent', initial_sent_at > 7 days ago,
+  //    followup_sent_at is null, and the address hasn't bounced/complained.
   const leadsResult = await pool.query(
     `SELECT id, business_name, email, generated_subject, generated_body FROM leads 
      WHERE status = 'sent' AND initial_sent_at <= NOW() - INTERVAL '7 days' AND followup_sent_at IS NULL 
+       AND NOT EXISTS (SELECT 1 FROM suppressed_emails se WHERE se.email = lower(leads.email))
      LIMIT $1`,
     [remaining]
   )

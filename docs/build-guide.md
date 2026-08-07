@@ -33,6 +33,7 @@ GOOGLE_PLACES_API_KEY=
 DEEPSEEK_API_KEY=
 DATABASE_URL=your-neon-pooled-connection-string
 SENDER_DOMAIN=yourdomain.com
+SENDER_NAME=Jephtah Okezie
 REPLY_TO_EMAIL=okeziejephtah@gmail.com
 ```
 

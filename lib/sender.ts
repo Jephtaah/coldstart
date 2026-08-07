@@ -9,7 +9,8 @@ export async function sendBatch(): Promise<number> {
   }
 
   const senderDomain = process.env.SENDER_DOMAIN || 'example.com'
-  const fromEmail = `outreach@${senderDomain}`
+  const senderName = process.env.SENDER_NAME
+  const fromEmail = senderName ? `${senderName} <outreach@${senderDomain}>` : `outreach@${senderDomain}`
 
   const resend = new Resend(apiKey)
 
@@ -43,10 +44,12 @@ export async function sendBatch(): Promise<number> {
   }
 
   // 3. Fetch up to 'remaining' leads with status = 'generated', weakest SEO first,
-  //    excluding anything at/above the SEO cutoff (defense in depth).
+  //    excluding anything at/above the SEO cutoff (defense in depth) and any
+  //    address that has bounced or complained before.
   const leadsResult = await pool.query(
     `SELECT id, email, generated_subject, generated_body FROM leads
      WHERE status = 'generated' AND (seo_score IS NULL OR seo_score < $2)
+       AND NOT EXISTS (SELECT 1 FROM suppressed_emails se WHERE se.email = lower(leads.email))
      ORDER BY seo_score ASC NULLS LAST LIMIT $1`,
     [remaining, MAX_SEO_SCORE_TO_SEND]
   )

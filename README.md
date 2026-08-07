@@ -19,10 +19,10 @@ Stage failures send an alert email to the operator instead of halting the run. E
 ## Tech stack
 
 - **Next.js 16** (App Router, TypeScript, Tailwind CSS v4) — dashboard + API routes
-- **Neon** (serverless Postgres) via plain `pg`, no ORM — 4 tables: `niches`, `leads`, `settings`, `suppressed_places`
+- **Neon** (serverless Postgres) via plain `pg`, no ORM — 5 tables: `niches`, `leads`, `settings`, `suppressed_places`, `suppressed_emails`
 - **Google Places API (New)** — business discovery
 - **DeepSeek API** — email/follow-up generation and niche suggestion
-- **Resend** — email delivery + open-tracking webhook
+- **Resend** — email delivery + open-tracking/bounce/complaint webhook
 - **GitHub Actions** — daily cron trigger
 
 ## Getting started
@@ -45,7 +45,9 @@ Create `.env.local` (never commit it):
 | `DEEPSEEK_API_KEY` | DeepSeek API key for email generation (or `AI_API_KEY`) |
 | `RESEND_API_KEY` | Resend key with sending access |
 | `SENDER_DOMAIN` | Verified sending domain (emails go out from `outreach@<domain>`) |
+| `SENDER_NAME` | Optional display name shown as the sender (omitted if unset) |
 | `REPLY_TO_EMAIL` | Where replies and pipeline failure alerts land |
+| `RESEND_WEBHOOK_SECRET` | Resend webhook signing secret (`whsec_…`), used to verify webhook requests |
 
 The GitHub Actions schedule additionally uses an `APP_URL` repository secret pointing at the deployed app.
 
@@ -63,7 +65,7 @@ Three tabs, backed by `app/page.tsx` + `components/DashboardClient.tsx`:
 
 - `GET /api/run-pipeline` — runs the full pipeline loop; returns per-stage results and whether more work remains (the GitHub Action loops on this).
 - `POST /api/settings` — update settings, save targeting matrix, add a custom niche.
-- `POST /api/webhooks/resend` — records Resend `email.opened` events against leads.
+- `POST /api/webhooks/resend` — records Resend `email.opened` events against leads, and handles `email.bounced`/`email.complained`: the lead is marked failed and the address is added to `suppressed_emails` so it can never be sent to again. The daily pipeline run also monitors 24h bounce/complaint counts and alerts the operator if they cross thresholds.
 
 ## Automation
 

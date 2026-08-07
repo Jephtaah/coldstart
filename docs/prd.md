@@ -68,9 +68,10 @@ No manual review step in the loop. Jephtah checks in on a dashboard when he want
 ## 7. Data model
 
 - **`niches`** — id, label, city, status (`active` / `exhausted`), source (`seed` / `ai_suggested`), reasoning (nullable, filled when AI-suggested), created_at
-- **`leads`** — id, niche_id, business_name, address, website, email, place_id, status (`new` / `scraped` / `generated` / `sent` / `followed_up` / `skipped` / `failed`), seo_score (0 = weakest SEO, top outreach priority; 100 = strongest), seo_flags (comma-separated weaknesses: no_title, no_meta_description, no_viewport, no_h1, thin_content, low_review_count, deep_result_page_N), scraped_content, generated_subject, generated_body, initial_sent_at, initial_opened_at, initial_resend_id, followup_subject, followup_body, followup_sent_at, followup_opened_at, followup_resend_id, created_at
+- **`leads`** — id, niche_id, business_name, address, website, email, place_id, status (`new` / `scraped` / `generated` / `sent` / `followed_up` / `skipped` / `failed`), seo_score (0 = weakest SEO, top outreach priority; 100 = strongest), seo_flags (comma-separated weaknesses: no_title, no_meta_description, no_viewport, no_h1, thin_content, low_review_count, deep_result_page_N), scraped_content, generated_subject, generated_body, initial_sent_at, initial_opened_at, initial_resend_id, followup_subject, followup_body, followup_sent_at, followup_opened_at, followup_resend_id, bounced_at, created_at
 - **`settings`** — single row: daily_cap, paused (bool), last_run_at
 - **`suppressed_places`** — place_id of businesses dropped by the pipeline (no website, unreachable, or no discoverable email), so they're never re-inserted by a later discovery run
+- **`suppressed_emails`** — email of addresses that bounced or complained, so they're never re-sent or re-sourced by a later run
 
 No separate email-log or opt-out tables — everything about a lead's email history lives on the lead row itself, since each lead gets at most two emails.
 
@@ -121,7 +122,15 @@ Site scoring and the 60/40 site/discovery merge are unchanged; the send cutoff s
 - Leads and Niches tables are paginated (10/25/50 rows per page) with prev/next and numbered pages, plus a "Showing X–Y of Z" summary.
 - A `no_website` status tab was added; the `skipped` tab was removed (high-SEO leads are now deleted rather than skipped).
 
-### 9.5 Discovery constraint & next steps
+### 9.5 Bounce / complaint handling & email suppression
+
+- The Resend webhook now handles `email.bounced` and `email.complained` in addition to `email.opened`. The affected lead is marked failed (with `bounced_at`) so it leaves the send/follow-up queues, and the address is written to a new `suppressed_emails` table.
+- Webhook requests are HMAC-verified against the signing secret (`RESEND_WEBHOOK_SECRET`, `whsec_…`) using the Standard Webhooks algorithm; unauthenticated requests are rejected with 401. Until the env var is set, verification logs a warning and stays off.
+- `suppressed_emails` (email, reason `bounce`/`complaint`, created_at) is checked by the sender, follow-up, website scraper, and no-website email sourcing so a dead address can never enter the pipeline again — even via re-discovery. Temporary (`Temporary`) bounces are deliberately not suppressed; those surface as `email.delivery_delayed` events.
+- The daily pipeline run includes a send-health monitor: 24h bounce/complaint counts that cross thresholds (`BOUNCE_ALERT_THRESHOLD` = 5, `COMPLAINT_ALERT_THRESHOLD` = 1, both in `lib/constants.ts`) trip the failure alert email before a young domain's reputation degrades unseen.
+- `leads` gains a nullable `bounced_at` column; `failed` is reused as the on-lead status so the dashboard needs no new filter tab. Run `docs/sql/add-bounce-suppression.sql` (idempotent) to apply the schema changes.
+
+### 9.6 Discovery constraint & next steps
 
 - Google Places caps every query at 60 results (3 pages of 20); pages 4+ do not exist. The pipeline already collects the deepest available page, so "starting from page 5" is not possible through this API.
 - The chosen strategy to surface weaker businesses is **query refinement** — splitting cities into neighborhoods/zip codes and adding qualifiers so less-prominent businesses fall within the 60-result window. This is a future item, not yet built.

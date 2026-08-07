@@ -1,6 +1,7 @@
 import { pool } from './db'
 import * as cheerio from 'cheerio'
 import { scoreSiteSignals, mergeSeoScores, DEFAULT_SEO_SCORE, type SiteSignals } from './seo'
+import { isSuppressedEmail } from './suppression'
 
 const EMAIL_REGEX = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g
 
@@ -143,6 +144,12 @@ export async function scrapeWebsite(leadId: string): Promise<boolean> {
     }
 
     if (!bestEmail || bestEmail.trim() === '') {
+      await discardLead()
+      return false
+    }
+
+    // Never store an address that already bounced/complained.
+    if (await isSuppressedEmail(bestEmail)) {
       await discardLead()
       return false
     }
