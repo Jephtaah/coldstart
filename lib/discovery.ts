@@ -1,6 +1,10 @@
 import { pool } from './db'
 import { scoreDiscoverySignals } from './seo'
-import { MAX_PLACES_PAGES_PER_NICHE, PLACES_PAGES_TO_SKIP } from './constants'
+import {
+  MAX_PLACES_PAGES_PER_NICHE,
+  PLACES_PAGES_TO_SKIP,
+  MAX_SEO_SCORE_TO_SEND,
+} from './constants'
 
 interface GooglePlace {
   id: string
@@ -110,13 +114,11 @@ export async function discoverBusinesses(
     return true
   })
 
-  // Only target businesses that have a website but rank weak on SEO
+  // Keep every business with a name/id, including ones without a website.
+  // No-website businesses are stored with status 'no_website' and get an email
+  // via search-based sourcing later (see lib/emailfinder.ts).
   const validPlaces = uniquePlaces.filter(
-    ({ place }) =>
-      place.id &&
-      place.displayName?.text &&
-      place.websiteUri &&
-      place.websiteUri.trim() !== ''
+    ({ place }) => place.id && place.displayName?.text
   )
   if (validPlaces.length === 0) {
     return 0
@@ -149,19 +151,33 @@ export async function discoverBusinesses(
     const businessName = place.displayName!.text
     const address = place.formattedAddress || null
     const website = place.websiteUri || null
+    const hasWebsite = Boolean(website && website.trim() !== '')
 
     const discovery = scoreDiscoverySignals({
-      hasWebsite: Boolean(website),
+      hasWebsite,
       userRatingCount: typeof place.userRatingCount === 'number' ? place.userRatingCount : null,
       rating: typeof place.rating === 'number' ? place.rating : null,
       pageIndex,
     })
 
+    // A place that already scores at/above the send cutoff on discovery signals
+    // alone is strong enough that we never want it. Suppress it so later runs
+    // don't re-fetch it, and don't store a row we'd only delete later.
+    if (discovery.score >= MAX_SEO_SCORE_TO_SEND) {
+      await pool.query(
+        `INSERT INTO suppressed_places (place_id) VALUES ($1) ON CONFLICT (place_id) DO NOTHING`,
+        [placeId]
+      )
+      continue
+    }
+
+    const status = hasWebsite ? 'new' : 'no_website'
+
     const insertResult = await pool.query(
       `INSERT INTO leads (niche_id, business_name, address, website, place_id, status, seo_score, seo_flags)
-       VALUES ($1, $2, $3, $4, $5, 'new', $6, $7)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        ON CONFLICT (place_id) DO NOTHING`,
-      [nicheId, businessName, address, website, placeId, discovery.score, discovery.flags.join(',') || null]
+      [nicheId, businessName, address, website, placeId, status, discovery.score, discovery.flags.join(',') || null]
     )
 
     if (insertResult.rowCount && insertResult.rowCount > 0) {

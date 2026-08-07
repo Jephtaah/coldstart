@@ -3,6 +3,7 @@ export const MAX_SEO_SCORE = 100
 export const DEFAULT_SEO_SCORE = 50
 export const SITE_WEIGHT = 0.6
 export const DISCOVERY_WEIGHT = 0.4
+export const NO_WEBSITE_PENALTY = 35
 
 export interface DiscoverySignals {
   hasWebsite: boolean
@@ -28,28 +29,30 @@ function clampScore(value: number): number {
   return Math.max(MIN_SEO_SCORE, Math.min(MAX_SEO_SCORE, Math.round(value)))
 }
 
-function ratingBucket(rating: number | null): number {
-  if (rating === null) return 50
-  if (rating < 3.5) return 55
-  if (rating < 4.2) return 70
-  if (rating < 4.7) return 85
-  return 90
+function pagePenalty(pageIndex: number): number {
+  if (pageIndex <= 0) return 0
+  if (pageIndex === 1) return 15
+  if (pageIndex === 2) return 40
+  if (pageIndex === 3) return 55
+  return 65
 }
 
-function reviewBucket(count: number | null): number {
-  if (count === null) return 45
-  if (count === 0) return 40
-  if (count <= 5) return 50
-  if (count <= 20) return 62
-  if (count <= 50) return 75
-  if (count <= 150) return 85
-  return 95
+function reviewPenalty(count: number | null): number {
+  if (count === null) return 25
+  if (count === 0) return 30
+  if (count <= 5) return 20
+  if (count <= 20) return 12
+  if (count <= 50) return 6
+  if (count <= 150) return 2
+  return 0
 }
 
-function pageBucket(pageIndex: number): number {
-  if (pageIndex <= 0) return 85
-  if (pageIndex === 1) return 70
-  return 55
+function ratingPenalty(rating: number | null): number {
+  if (rating === null) return 15
+  if (rating < 3.5) return 15
+  if (rating < 4.2) return 8
+  if (rating < 4.7) return 3
+  return 0
 }
 
 export function scoreDiscoverySignals(signals: DiscoverySignals): SeoResult {
@@ -58,12 +61,12 @@ export function scoreDiscoverySignals(signals: DiscoverySignals): SeoResult {
   if (signals.userRatingCount !== null && signals.userRatingCount <= 5) flags.push('low_review_count')
   if (signals.pageIndex > 0) flags.push(`deep_result_page_${signals.pageIndex + 1}`)
 
-  const ratingScore = ratingBucket(signals.rating)
-  const reviewScore = reviewBucket(signals.userRatingCount)
-  const pageScore = pageBucket(signals.pageIndex)
+  let weakness = pagePenalty(signals.pageIndex)
+  weakness += reviewPenalty(signals.userRatingCount)
+  weakness += ratingPenalty(signals.rating)
+  if (!signals.hasWebsite) weakness += NO_WEBSITE_PENALTY
 
-  const score = 0.5 * reviewScore + 0.25 * ratingScore + 0.25 * pageScore
-  return { score: clampScore(score), flags }
+  return { score: clampScore(MAX_SEO_SCORE - weakness), flags }
 }
 
 export function scoreSiteSignals(signals: SiteSignals): SeoResult {

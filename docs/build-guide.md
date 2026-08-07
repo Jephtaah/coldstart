@@ -353,3 +353,24 @@ Then update the M8 pipeline route: after a discovery run for a niche returns 0 n
 - Re-read a fresh batch of 15-20 generated emails after a week of real-world use — tone can drift once it's running on new niches it suggested itself; tighten the M5 prompt again if needed.
 
 **Acceptance test:** the pipeline runs unattended for 7 days, you get notified the one time something breaks (test this by intentionally breaking one API key temporarily), and the dashboard reflects reality throughout.
+
+---
+
+## M13 — Post-v1: SEO scoring rework, no-website segment, lean DB & pagination
+
+**Objective:** fix targeting so the deepest-page businesses (the ones that need help most) score as weak instead of strong, add a reachable no-website segment, keep the database lean by deleting useless leads, and paginate the dashboard tables.
+
+**What changed:**
+
+1. **SEO scoring** (`lib/seo.ts`): replaced the score-up bucket model with a weakness-penalty model — `score = 100 − pagePenalty − reviewPenalty − ratingPenalty − noWebsitePenalty`. Page depth is dominant (page 3 → 40, page 5+ → 65). Site score and the 60/40 merge are unchanged; the send cutoff stays 65. New page-3 leads now score ~20–55 instead of ~70–85.
+2. **No-website segment** (`lib/discovery.ts`): discovery keeps businesses without a website, inserting them with `status = 'no_website'`, the no-website penalty, and a `no_website` flag.
+3. **Email sourcing** (new `lib/emailfinder.ts`): `sourceNoWebsiteEmails(max)` searches DuckDuckGo HTML for `"{business_name} {city}"`, fetches the top `EMAIL_SEARCH_RESULT_PAGES` (4) result pages, and extracts emails reusing `extractEmails` / `extractEmailsFromHtml` from `lib/scraper.ts`. Found → lead moves to `scraped`; not found → lead is deleted and its `place_id` suppressed.
+4. **Lean database:** high-SEO leads (merged score ≥ 65) are deleted and suppressed in the generation stage; discovery suppresses any place scoring ≥ 65 before inserting it; leads with no discoverable email are deleted. `failed` leads are kept.
+5. **Pipeline** (`app/api/run-pipeline/route.ts`): new Stage 2b runs email sourcing with a per-run cap (`MAX_EMAIL_SEARCHES_PER_RUN = 8`) so Vercel function timeouts aren't blown.
+6. **Dashboard** (`components/DashboardClient.tsx`): pagination on the Leads and Niches tables (10/25/50 per page, prev/next + numbered pages), a new `no_website` status tab, and removal of the `skipped` tab.
+
+**Setup steps:** none — no schema changes, no new environment variables, no new API keys.
+
+**AI prompt to paste:** not applicable — this milestone was implemented directly against the existing codebase.
+
+**Acceptance test:** trigger a manual pipeline run; confirm (1) newly discovered page-3 leads score 20–55 (Weak/Fair), (2) no-website leads either get an email and progress to `scraped` or are deleted, (3) no lead remains in the DB with `seo_score >= 65`, and (4) the dashboard Leads and Niches tables page correctly.

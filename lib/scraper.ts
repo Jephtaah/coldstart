@@ -4,7 +4,7 @@ import { scoreSiteSignals, mergeSeoScores, DEFAULT_SEO_SCORE, type SiteSignals }
 
 const EMAIL_REGEX = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g
 
-function extractEmails(text: string): string[] {
+export function extractEmails(text: string): string[] {
   const matches = text.match(EMAIL_REGEX)
   if (!matches) return []
   // Filter out common image extensions or bogus matches
@@ -17,6 +17,30 @@ function extractEmails(text: string): string[] {
       !email.includes('example.com') &&
       !email.includes('sentry.io')
   )
+}
+
+export function extractEmailsFromHtml(html: string): string[] {
+  const $ = cheerio.load(html)
+
+  // Extract mailto links
+  const mailtoEmails: string[] = []
+  $('a[href^="mailto:"]').each((_, el) => {
+    const href = $(el).attr('href')
+    if (href) {
+      const rawPart = href.replace(/^mailto:/i, '').split('?')[0].trim()
+      if (rawPart) {
+        let emailPart = rawPart
+        try {
+          emailPart = decodeURIComponent(rawPart).trim()
+        } catch {
+          // leave the raw value if it is not valid URL-encoding
+        }
+        mailtoEmails.push(emailPart)
+      }
+    }
+  })
+
+  return Array.from(new Set([...mailtoEmails, ...extractEmails(html)]))
 }
 
 async function fetchPageTextAndEmails(
@@ -47,31 +71,11 @@ async function fetchPageTextAndEmails(
     const html = await res.text()
     const $ = cheerio.load(html)
 
-    // Extract mailto links
-    const mailtoEmails: string[] = []
-    $('a[href^="mailto:"]').each((_, el) => {
-      const href = $(el).attr('href')
-      if (href) {
-        const rawPart = href.replace(/^mailto:/i, '').split('?')[0].trim()
-        if (rawPart) {
-          let emailPart = rawPart
-          try {
-            emailPart = decodeURIComponent(rawPart).trim()
-          } catch {
-            // leave the raw value if it is not valid URL-encoding
-          }
-          mailtoEmails.push(emailPart)
-        }
-      }
-    })
-
     // Remove unwanted elements
     $('script, style, nav, footer, header, noscript').remove()
 
     const bodyText = $('body').text().replace(/\s+/g, ' ').trim()
-    const textEmails = extractEmails(html)
-
-    const allEmails = Array.from(new Set([...mailtoEmails, ...textEmails]))
+    const allEmails = extractEmailsFromHtml(html)
 
     const siteSignals: SiteSignals = {
       title: $('title').first().text().trim(),
@@ -124,7 +128,10 @@ export async function scrapeWebsite(leadId: string): Promise<boolean> {
   }
 
   if (!website || website.trim() === '') {
-    await discardLead()
+    // No website: this lead belongs to the no-website segment. It needs
+    // search-based email sourcing (lib/emailfinder.ts), so keep the row and
+    // route it back to that pool instead of discarding it.
+    await pool.query('UPDATE leads SET status = $1 WHERE id = $2', ['no_website', leadId])
     return false
   }
 
