@@ -1,4 +1,5 @@
 import { pool } from './db'
+import { isSuppressedEmail } from './suppression'
 
 export async function generateEmail(leadId: string): Promise<boolean> {
   const apiKey = process.env.DEEPSEEK_API_KEY || process.env.AI_API_KEY
@@ -17,6 +18,20 @@ export async function generateEmail(leadId: string): Promise<boolean> {
 
   const lead = result.rows[0]
   if (!lead.email || lead.email.trim() === '') {
+    if (lead.place_id) {
+      await pool.query(
+        `INSERT INTO suppressed_places (place_id) VALUES ($1) ON CONFLICT (place_id) DO NOTHING`,
+        [lead.place_id]
+      )
+    }
+    await pool.query('DELETE FROM leads WHERE id = $1', [leadId])
+    return false
+  }
+
+  // Don't spend generation tokens on an address that has bounced or complained.
+  // The email could have been suppressed after this lead was scraped (e.g. a
+  // different lead with the same address bounced), so re-check before the AI call.
+  if (await isSuppressedEmail(lead.email)) {
     if (lead.place_id) {
       await pool.query(
         `INSERT INTO suppressed_places (place_id) VALUES ($1) ON CONFLICT (place_id) DO NOTHING`,

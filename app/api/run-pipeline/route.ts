@@ -212,7 +212,10 @@ export async function GET() {
     }
 
     const leadsResult = await pool.query(
-      'SELECT id FROM leads WHERE status = $1 ORDER BY seo_score ASC NULLS LAST LIMIT $2',
+      `SELECT l.id FROM leads l
+       WHERE l.status = $1
+         AND NOT EXISTS (SELECT 1 FROM suppressed_emails se WHERE se.email = lower(l.email))
+       ORDER BY l.seo_score ASC NULLS LAST LIMIT $2`,
       ['scraped', MAX_GENERATES_PER_RUN]
     )
     let generatedCount = 0
