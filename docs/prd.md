@@ -83,3 +83,45 @@ No separate email-log or opt-out tables — everything about a lead's email hist
 - Whether to bring businesses without a website back into scope later (e.g., sourcing emails via a SERP/directory search, or a call-based outreach flow) once v1 proves out
 
 See the separate **Milestones & Build Guide** document for the actual step-by-step implementation plan.
+
+## 9. Post-v1 update — SEO scoring, no-website segment, lean database & dashboard pagination
+
+This section documents the changes shipped after the v1 build. Where it contradicts a v1 decision above, this section supersedes it.
+
+### 9.1 Better SEO scoring
+
+Scoring flipped from a score-up bucket model to a weakness-penalty model:
+
+```
+score = 100 − pagePenalty − reviewPenalty − ratingPenalty − noWebsitePenalty
+```
+
+- **Page depth (dominant signal):** page 1 → 0 · page 2 → 15 · page 3 → 40 · page 4 → 55 · page 5+ → 65
+- **Review count:** none → 25 · 0 → 30 · 1–5 → 20 · 6–20 → 12 · 21–50 → 6 · 51–150 → 2 · 150+ → 0
+- **Rating:** none / <3.5 → 15 · <4.2 → 8 · <4.7 → 3 · 4.7+ → 0
+- **No website:** +35
+
+Site scoring and the 60/40 site/discovery merge are unchanged; the send cutoff stays at 65. Net effect: page-3 businesses now land ~20–55 (Weak/Fair) instead of ~70–85 (Solid), so the daily cap is spent on the businesses that need help most.
+
+### 9.2 No-website segment
+
+- Discovery no longer excludes businesses without a website. They are stored as leads with `status = 'no_website'`, the no-website penalty, and a `no_website` SEO flag.
+- A new search-based email source (`lib/emailfinder.ts`) queries DuckDuckGo HTML for `"{business_name} {city}"`, fetches the top 4 result pages, and extracts emails with the same regex + `mailto:` logic used by the scraper.
+- Leads that find an email move to `scraped` and flow into generation with the existing "build a website" pitch. Leads with no findable email are deleted.
+
+### 9.3 Lean database — delete useless data
+
+- Leads whose merged SEO score is at/above the cutoff (65) are **deleted** (previously stored as `skipped`) and their `place_id` recorded in `suppressed_places` so discovery never re-adds them.
+- Discovery suppresses any place that scores at/above 65 on discovery signals alone before inserting it.
+- Leads with no discoverable email (whether they have a website or not) are deleted and suppressed.
+- `failed` leads (generation/send failures) are intentionally kept for inspection.
+
+### 9.4 Dashboard
+
+- Leads and Niches tables are paginated (10/25/50 rows per page) with prev/next and numbered pages, plus a "Showing X–Y of Z" summary.
+- A `no_website` status tab was added; the `skipped` tab was removed (high-SEO leads are now deleted rather than skipped).
+
+### 9.5 Discovery constraint & next steps
+
+- Google Places caps every query at 60 results (3 pages of 20); pages 4+ do not exist. The pipeline already collects the deepest available page, so "starting from page 5" is not possible through this API.
+- The chosen strategy to surface weaker businesses is **query refinement** — splitting cities into neighborhoods/zip codes and adding qualifiers so less-prominent businesses fall within the 60-result window. This is a future item, not yet built.

@@ -56,7 +56,97 @@ interface DashboardClientProps {
   defaultCities: string[]
 }
 
-const LEAD_STATUS_TABS = ['all', 'new', 'scraped', 'generated', 'sent', 'followed_up', 'skipped', 'failed'] as const
+const LEAD_STATUS_TABS = ['all', 'new', 'scraped', 'generated', 'sent', 'followed_up', 'no_website', 'failed'] as const
+const PAGE_SIZE_OPTIONS = [10, 25, 50]
+
+interface PaginationControlsProps {
+  page: number
+  pageSize: number
+  total: number
+  onPageChange: (page: number) => void
+  onPageSizeChange: (size: number) => void
+}
+
+function PaginationControls({
+  page,
+  pageSize,
+  total,
+  onPageChange,
+  onPageSizeChange,
+}: PaginationControlsProps) {
+  const totalPages = Math.max(1, Math.ceil(total / pageSize))
+  const start = total === 0 ? 0 : (page - 1) * pageSize + 1
+  const end = Math.min(page * pageSize, total)
+  const pageNumbers: number[] = []
+  const window = 2
+  for (let p = 1; p <= totalPages; p++) {
+    if (p === 1 || p === totalPages || (p >= page - window && p <= page + window)) {
+      pageNumbers.push(p)
+    } else if (pageNumbers[pageNumbers.length - 1] !== -1) {
+      pageNumbers.push(-1)
+    }
+  }
+
+  return (
+    <div className="flex flex-col sm:flex-row items-center justify-between gap-3 px-6 py-3 border-t border-[#E6E6DF] bg-[#FAFAF7]">
+      <div className="text-xs text-[#6B6B65] font-mono">
+        {total === 0 ? '0 results' : `Showing ${start}\u2013${end} of ${total}`}
+      </div>
+      <div className="flex items-center gap-3">
+        <select
+          value={pageSize}
+          onChange={(e) => onPageSizeChange(parseInt(e.target.value, 10))}
+          className="px-2 py-1.5 text-xs bg-white border border-[#D9D9D3] rounded-md focus:outline-none focus:ring-2 focus:ring-[#141413]/20"
+          aria-label="Rows per page"
+        >
+          {PAGE_SIZE_OPTIONS.map((size) => (
+            <option key={size} value={size}>
+              {size} / page
+            </option>
+          ))}
+        </select>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => onPageChange(page - 1)}
+            disabled={page <= 1}
+            className="px-2.5 py-1.5 text-xs font-medium rounded-md border border-[#D9D9D3] bg-white text-[#383833] disabled:opacity-40 disabled:cursor-not-allowed hover:bg-[#F0F0EC] transition-colors"
+            aria-label="Previous page"
+          >
+            Prev
+          </button>
+          {pageNumbers.map((p, index) =>
+            p === -1 ? (
+              <span key={`ellipsis-${index}`} className="px-1 text-xs text-[#A3A39E]">
+                …
+              </span>
+            ) : (
+              <button
+                key={p}
+                onClick={() => onPageChange(p)}
+                aria-current={p === page ? 'page' : undefined}
+                className={`px-2.5 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                  p === page
+                    ? 'bg-[#141413] text-white'
+                    : 'bg-white border border-[#D9D9D3] text-[#383833] hover:bg-[#F0F0EC]'
+                }`}
+              >
+                {p}
+              </button>
+            )
+          )}
+          <button
+            onClick={() => onPageChange(page + 1)}
+            disabled={page >= totalPages}
+            className="px-2.5 py-1.5 text-xs font-medium rounded-md border border-[#D9D9D3] bg-white text-[#383833] disabled:opacity-40 disabled:cursor-not-allowed hover:bg-[#F0F0EC] transition-colors"
+            aria-label="Next page"
+          >
+            Next
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
 
 export default function DashboardClient({
   initialSettings,
@@ -79,6 +169,10 @@ export default function DashboardClient({
   const [statusFilter, setStatusFilter] = useState<string>('all')
   const [searchQuery, setSearchQuery] = useState<string>('')
   const [expandedLeadId, setExpandedLeadId] = useState<string | null>(null)
+  const [leadsPage, setLeadsPage] = useState(1)
+  const [leadsPageSize, setLeadsPageSize] = useState(25)
+  const [nichesPage, setNichesPage] = useState(1)
+  const [nichesPageSize, setNichesPageSize] = useState(10)
 
   // Settings state
   const [dailyCap, setDailyCap] = useState(initialSettings.daily_cap)
@@ -169,6 +263,30 @@ export default function DashboardClient({
       (lead.website && lead.website.toLowerCase().includes(searchQuery.toLowerCase()))
     return matchesStatus && matchesSearch
   })
+
+  // Reset pagination whenever the filter or search changes
+  const applyStatusFilter = (st: string) => {
+    setStatusFilter(st)
+    setLeadsPage(1)
+  }
+  const applySearchQuery = (q: string) => {
+    setSearchQuery(q)
+    setLeadsPage(1)
+  }
+
+  const leadsTotalPages = Math.max(1, Math.ceil(filteredLeads.length / leadsPageSize))
+  const currentLeadsPage = Math.min(leadsPage, leadsTotalPages)
+  const pagedLeads = filteredLeads.slice(
+    (currentLeadsPage - 1) * leadsPageSize,
+    currentLeadsPage * leadsPageSize
+  )
+
+  const nichesTotalPages = Math.max(1, Math.ceil(initialNiches.length / nichesPageSize))
+  const currentNichesPage = Math.min(nichesPage, nichesTotalPages)
+  const pagedNiches = initialNiches.slice(
+    (currentNichesPage - 1) * nichesPageSize,
+    currentNichesPage * nichesPageSize
+  )
 
   // Handlers
   const handleUpdateSettings = async (e: React.FormEvent) => {
@@ -416,39 +534,62 @@ export default function DashboardClient({
         {activeTab === 'leads' && (
           <div className="bg-white rounded-xl border border-[#E6E6DF] shadow-[0_1px_3px_rgba(0,0,0,0.02)] overflow-hidden">
             <div className="p-4 sm:p-5 border-b border-[#E6E6DF] bg-[#FAFAF7] flex flex-col sm:flex-row justify-between items-center gap-4">
-              <div className="flex flex-wrap items-center gap-1.5">
-                {LEAD_STATUS_TABS.map((st) => {
-                  const count = st === 'all' ? stats.total : statusCounts[st] || 0
-                  return (
-                    <button
-                      key={st}
-                      onClick={() => setStatusFilter(st)}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-medium capitalize transition-all flex items-center gap-1.5 ${
-                        statusFilter === st
-                          ? 'bg-[#141413] text-white shadow-sm'
-                          : 'bg-white text-[#595955] hover:bg-[#F0F0EC] border border-[#E0E0D8]'
-                      }`}
-                    >
-                      {st.replace('_', ' ')}
-                      <span
-                        className={`px-1.5 py-0.5 rounded-full text-[10px] font-mono leading-none ${
+              <div className="flex items-center gap-1.5 w-full sm:flex-1 sm:min-w-0">
+                <div className="hidden sm:flex flex-nowrap items-center gap-1.5 overflow-x-auto">
+                  {LEAD_STATUS_TABS.map((st) => {
+                    const count = st === 'all' ? stats.total : statusCounts[st] || 0
+                    return (
+                      <button
+                        key={st}
+                        onClick={() => applyStatusFilter(st)}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-medium capitalize transition-all flex items-center gap-1.5 whitespace-nowrap ${
                           statusFilter === st
-                            ? 'bg-white/15 text-white'
-                            : 'bg-[#EFEFED] text-[#595955] border border-[#D9D9D3]'
+                            ? 'bg-[#141413] text-white shadow-sm'
+                            : 'bg-white text-[#595955] hover:bg-[#F0F0EC] border border-[#E0E0D8]'
                         }`}
                       >
-                        {count}
-                      </span>
-                    </button>
-                  )
-                })}
+                        {st.replace('_', ' ')}
+                        <span
+                          className={`px-1.5 py-0.5 rounded-full text-[10px] font-mono leading-none ${
+                            statusFilter === st
+                              ? 'bg-white/15 text-white'
+                              : 'bg-[#EFEFED] text-[#595955] border border-[#D9D9D3]'
+                          }`}
+                        >
+                          {count}
+                        </span>
+                      </button>
+                    )
+                  })}
+                </div>
+                <div className="sm:hidden flex items-center gap-2 w-full">
+                  <label htmlFor="status-filter" className="text-xs font-medium text-[#595955] shrink-0">
+                    Status
+                  </label>
+                  <select
+                    id="status-filter"
+                    value={statusFilter}
+                    onChange={(e) => applyStatusFilter(e.target.value)}
+                    className="flex-1 px-3.5 py-2 text-sm bg-white border border-[#D9D9D3] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#141413]/20 focus:border-[#141413] transition-all"
+                  >
+                    {LEAD_STATUS_TABS.map((st) => {
+                      const count = st === 'all' ? stats.total : statusCounts[st] || 0
+                      const label = st === 'all' ? 'All leads' : st.replace('_', ' ')
+                      return (
+                        <option key={st} value={st}>
+                          {label} ({count})
+                        </option>
+                      )
+                    })}
+                  </select>
+                </div>
               </div>
-              <div className="w-full sm:w-auto">
+              <div className="w-full sm:w-auto sm:shrink-0">
                 <input
                   type="text"
                   placeholder="Filter by business, email, website..."
                   value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onChange={(e) => applySearchQuery(e.target.value)}
                   className="w-full sm:w-72 px-3.5 py-2 text-sm bg-white border border-[#D9D9D3] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#141413]/20 focus:border-[#141413] transition-all"
                 />
               </div>
@@ -479,7 +620,7 @@ export default function DashboardClient({
                       </td>
                     </tr>
                   ) : (
-                    filteredLeads.map((lead) => (
+                    pagedLeads.map((lead) => (
                       <tr key={lead.id} className="hover:bg-[#FCFCFA] transition-colors">
                         <td className="px-6 py-4">
                           <div className="font-medium text-[#141413] truncate" title={lead.business_name}>{lead.business_name}</div>
@@ -494,6 +635,8 @@ export default function DashboardClient({
                                 ? 'bg-rose-50 text-rose-800 border-rose-200'
                                 : lead.status === 'skipped'
                                 ? 'bg-slate-50 text-slate-700 border-slate-200'
+                                : lead.status === 'no_website'
+                                ? 'bg-orange-50 text-orange-800 border-orange-200'
                                 : lead.status === 'generated' || lead.status === 'scraped'
                                 ? 'bg-sky-50 text-sky-800 border-sky-200'
                                 : 'bg-[#F0F0EC] text-[#595955] border-[#D9D9D3]'
@@ -506,6 +649,8 @@ export default function DashboardClient({
                                 ? 'bg-rose-600'
                                 : lead.status === 'skipped'
                                 ? 'bg-slate-500'
+                                : lead.status === 'no_website'
+                                ? 'bg-orange-600'
                                 : lead.status === 'generated' || lead.status === 'scraped'
                                 ? 'bg-sky-600'
                                 : 'bg-[#8C8C85]'
@@ -588,6 +733,16 @@ export default function DashboardClient({
                 </tbody>
               </table>
             </div>
+            <PaginationControls
+              page={currentLeadsPage}
+              pageSize={leadsPageSize}
+              total={filteredLeads.length}
+              onPageChange={setLeadsPage}
+              onPageSizeChange={(size) => {
+                setLeadsPageSize(size)
+                setLeadsPage(1)
+              }}
+            />
           </div>
         )}
 
@@ -751,7 +906,7 @@ export default function DashboardClient({
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[#EFEFED]">
-                    {initialNiches.map((niche) => (
+                    {pagedNiches.map((niche) => (
                       <tr key={niche.id} className="hover:bg-[#FCFCFA] transition-colors">
                         <td className="px-6 py-4 font-medium text-[#141413]">{niche.label}</td>
                         <td className="px-6 py-4 text-[#595955]">{niche.city}</td>
@@ -774,6 +929,16 @@ export default function DashboardClient({
                   </tbody>
                 </table>
               </div>
+              <PaginationControls
+                page={currentNichesPage}
+                pageSize={nichesPageSize}
+                total={initialNiches.length}
+                onPageChange={setNichesPage}
+                onPageSizeChange={(size) => {
+                  setNichesPageSize(size)
+                  setNichesPage(1)
+                }}
+              />
             </div>
           </div>
         )}

@@ -6,7 +6,13 @@ import { generateEmail } from '@/lib/generator'
 import { sendBatch } from '@/lib/sender'
 import { sendFollowUps } from '@/lib/followup'
 import { expandNiches } from '@/lib/expansion'
-import { MAX_SEO_SCORE_TO_SEND, MAX_INITIAL_SENDS_PER_DAY, MAX_FOLLOWUPS_PER_DAY } from '@/lib/constants'
+import { sourceNoWebsiteEmails } from '@/lib/emailfinder'
+import {
+  MAX_SEO_SCORE_TO_SEND,
+  MAX_INITIAL_SENDS_PER_DAY,
+  MAX_FOLLOWUPS_PER_DAY,
+  MAX_EMAIL_SEARCHES_PER_RUN,
+} from '@/lib/constants'
 import { Resend } from 'resend'
 
 export const dynamic = 'force-dynamic'
@@ -167,13 +173,39 @@ export async function GET() {
     results.scraping = { success: false, error: message }
   }
 
-  // Stage 3: Generation (leads scoring at/above the SEO cutoff are skipped first)
+  // Stage 2b: Source emails for no-website leads via web search. Leads that get
+  // an email move to 'scraped' and flow into generation; leads with no findable
+  // email are deleted so the database stays lean.
   try {
-    const skipResult = await pool.query(
-      `UPDATE leads SET status = 'skipped' WHERE status = ANY($1::text[]) AND seo_score >= $2`,
+    const { sourced, deleted } = await sourceNoWebsiteEmails(MAX_EMAIL_SEARCHES_PER_RUN)
+    results.emailSourcing = {
+      success: true,
+      processed: sourced,
+      ...(deleted > 0 && { deleted }),
+    }
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err)
+    results.emailSourcing = { success: false, error: message }
+  }
+
+  // Stage 3: Generation. Leads scoring at/above the SEO cutoff are deleted
+  // (and suppressed) rather than stored as 'skipped' — nothing useless is kept.
+  try {
+    const highScoreResult = await pool.query(
+      `SELECT id, place_id FROM leads WHERE status = ANY($1::text[]) AND seo_score >= $2`,
       [['scraped', 'generated'], MAX_SEO_SCORE_TO_SEND]
     )
-    const skippedCount = skipResult.rowCount || 0
+    let deletedHighScoreCount = 0
+    for (const row of highScoreResult.rows) {
+      if (row.place_id) {
+        await pool.query(
+          `INSERT INTO suppressed_places (place_id) VALUES ($1) ON CONFLICT (place_id) DO NOTHING`,
+          [row.place_id]
+        )
+      }
+      await pool.query('DELETE FROM leads WHERE id = $1', [row.id])
+      deletedHighScoreCount++
+    }
 
     const leadsResult = await pool.query(
       'SELECT id FROM leads WHERE status = $1 ORDER BY seo_score ASC NULLS LAST LIMIT $2',
@@ -195,7 +227,7 @@ export async function GET() {
     results.generation = {
       success: errors.length === 0,
       processed: generatedCount,
-      ...(skippedCount > 0 && { skipped: skippedCount }),
+      ...(deletedHighScoreCount > 0 && { deleted: deletedHighScoreCount }),
       ...(errors.length > 0 && { error: errors.join('; ') }),
     }
   } catch (err: unknown) {
