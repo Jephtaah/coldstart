@@ -1,8 +1,9 @@
 import { pool } from './db'
 import { Resend } from 'resend'
 import { MAX_FOLLOWUPS_PER_DAY } from './constants'
+import { toHtml, sendDelayMs, sleep } from './emailFormat'
 
-export async function sendFollowUps(): Promise<number> {
+export async function sendFollowUps(maxFollowups: number): Promise<number> {
   const apiKey = process.env.DEEPSEEK_API_KEY || process.env.AI_API_KEY
   if (!apiKey) {
     throw new Error('DEEPSEEK_API_KEY or AI_API_KEY is not set in environment variables.')
@@ -43,12 +44,14 @@ export async function sendFollowUps(): Promise<number> {
 
   // 3. Find eligible leads: status = 'sent', initial_sent_at > 7 days ago,
   //    followup_sent_at is null, and the address hasn't bounced/complained.
+  //    The daily budget is enforced above; this bound keeps one invocation
+  //    safely inside the function timeout so the loop can trickle follow-ups.
   const leadsResult = await pool.query(
-    `SELECT id, business_name, email, generated_subject, generated_body FROM leads 
+    `SELECT id, business_name, email, generated_subject, generated_body, followup_subject, followup_body FROM leads 
      WHERE status = 'sent' AND initial_sent_at <= NOW() - INTERVAL '7 days' AND followup_sent_at IS NULL 
        AND NOT EXISTS (SELECT 1 FROM suppressed_emails se WHERE se.email = lower(leads.email))
      LIMIT $1`,
-    [remaining]
+    [Math.min(maxFollowups, remaining)]
   )
 
   const leads = leadsResult.rows
@@ -66,7 +69,26 @@ export async function sendFollowUps(): Promise<number> {
 
     const businessName = lead.business_name
 
-    const systemPrompt = `You are an independent freelance web developer writing a quick follow-up email to a local business owner.
+    // A crashed earlier attempt may have persisted follow-up content without
+    // ever recording the sent timestamp. Reuse it so a deduped resend stores
+    // exactly what was delivered. Otherwise generate fresh content and persist
+    // it before sending, so a crash mid-send can't lose it either.
+    const persistedSubject = lead.followup_subject
+    const persistedBody = lead.followup_body
+    const hasPersistedContent =
+      !!persistedSubject &&
+      !!persistedBody &&
+      persistedSubject.trim() !== '' &&
+      persistedBody.trim() !== ''
+
+    let subject: string
+    let body: string
+
+    if (hasPersistedContent) {
+      subject = persistedSubject
+      body = persistedBody
+    } else {
+      const systemPrompt = `You are an independent freelance web developer writing a quick follow-up email to a local business owner.
 Strict Rules:
 1. NO em dashes anywhere in the output.
 2. NO corporate filler phrases ("I hope this finds you well", "reaching out", "circle back", etc.).
@@ -84,67 +106,84 @@ Business Name: ${businessName}
 Previous Subject: ${lead.generated_subject || ''}
 `
 
-    async function generateFollowUpAI(): Promise<{ subject: string; body: string } | null> {
-      for (let attempt = 0; attempt < 2; attempt++) {
-        const controller = new AbortController()
-        const timeoutId = setTimeout(() => controller.abort(), 20000)
-        try {
-          const res = await fetch('https://api.deepseek.com/chat/completions', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              Authorization: `Bearer ${apiKey}`,
-            },
-            body: JSON.stringify({
-              model: 'deepseek-v4-flash',
-              messages: [
-                { role: 'system', content: systemPrompt },
-                { role: 'user', content: `Generate the follow-up email for ${businessName}.` },
-              ],
-              temperature: 0.7,
-            }),
-            signal: controller.signal,
-          })
-          clearTimeout(timeoutId)
+      async function generateFollowUpAI(): Promise<{ subject: string; body: string } | null> {
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const controller = new AbortController()
+          const timeoutId = setTimeout(() => controller.abort(), 20000)
+          try {
+            const res = await fetch('https://api.deepseek.com/chat/completions', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${apiKey}`,
+              },
+              body: JSON.stringify({
+                model: 'deepseek-v4-flash',
+                messages: [
+                  { role: 'system', content: systemPrompt },
+                  { role: 'user', content: `Generate the follow-up email for ${businessName}.` },
+                ],
+                temperature: 0.7,
+              }),
+              signal: controller.signal,
+            })
+            clearTimeout(timeoutId)
 
-          if (!res.ok) {
-            throw new Error(`DeepSeek API error: ${res.status} ${await res.text()}`)
+            if (!res.ok) {
+              throw new Error(`DeepSeek API error: ${res.status} ${await res.text()}`)
+            }
+
+            const data = await res.json()
+            let content = data.choices?.[0]?.message?.content
+            if (!content) throw new Error('Empty response from DeepSeek API')
+
+            // Strip markdown code fences if present
+            content = content.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/\s*```$/, '').trim()
+
+            const parsed = JSON.parse(content)
+            if (typeof parsed.subject === 'string' && typeof parsed.body === 'string') {
+              return { subject: parsed.subject, body: parsed.body }
+            }
+          } catch {
+            clearTimeout(timeoutId)
+            // Retry on parse failure or network error
           }
-
-          const data = await res.json()
-          let content = data.choices?.[0]?.message?.content
-          if (!content) throw new Error('Empty response from DeepSeek API')
-
-          // Strip markdown code fences if present
-          content = content.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/\s*```$/, '').trim()
-
-          const parsed = JSON.parse(content)
-          if (typeof parsed.subject === 'string' && typeof parsed.body === 'string') {
-            return { subject: parsed.subject, body: parsed.body }
-          }
-        } catch {
-          clearTimeout(timeoutId)
-          // Retry on parse failure or network error
         }
+        return null
       }
-      return null
-    }
 
-    const emailData = await generateFollowUpAI()
+      const emailData = await generateFollowUpAI()
 
-    if (!emailData) {
-      await pool.query('UPDATE leads SET status = $1 WHERE id = $2', ['failed', lead.id])
-      continue
+      if (!emailData) {
+        await pool.query('UPDATE leads SET status = $1 WHERE id = $2', ['failed', lead.id])
+        continue
+      }
+
+      subject = emailData.subject
+      body = emailData.body
+
+      // Persist before sending so a crash between Resend accepting the email
+      // and the sent-at UPDATE can't lose the exact content that was delivered.
+      await pool.query(
+        'UPDATE leads SET followup_subject = $1, followup_body = $2 WHERE id = $3',
+        [subject, body, lead.id]
+      )
     }
 
     try {
-      const emailPromise = resend.emails.send({
-        from: fromEmail,
-        to: lead.email,
-        subject: emailData.subject,
-        text: emailData.body,
-        replyTo: process.env.REPLY_TO_EMAIL,
-      })
+      await sleep(sendDelayMs())
+
+      const emailPromise = resend.emails.send(
+        {
+          from: fromEmail,
+          to: lead.email,
+          subject: subject,
+          text: body,
+          html: toHtml(body),
+          replyTo: process.env.REPLY_TO_EMAIL,
+        },
+        { idempotencyKey: `followup:${lead.id}` }
+      )
 
       const timeoutPromise = new Promise((_, reject) =>
         setTimeout(() => reject(new Error('Resend API timeout')), 10000)
@@ -167,8 +206,8 @@ Previous Subject: ${lead.generated_subject || ''}
       const resendId = emailResponse.data.id
 
       await pool.query(
-        `UPDATE leads SET followup_subject = $1, followup_body = $2, followup_sent_at = NOW(), followup_resend_id = $3, status = 'followed_up' WHERE id = $4`,
-        [emailData.subject, emailData.body, resendId, lead.id]
+        `UPDATE leads SET followup_sent_at = NOW(), followup_resend_id = $1, status = 'followed_up' WHERE id = $2`,
+        [resendId, lead.id]
       )
 
       successfullySent++
