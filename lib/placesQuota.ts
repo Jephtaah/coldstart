@@ -32,7 +32,9 @@ export async function getPlacesQuotaRemaining(): Promise<number> {
 
 // Atomically reserves `count` calls against today's budget. Returns false when
 // doing so would exceed the daily cap; a rejected reservation consumes nothing,
-// so the caller should stop calling Google for the rest of the day.
+// so the caller should stop calling Google for the rest of the day. Throws if
+// the settings row itself is missing, so a misconfiguration is reported as an
+// error instead of being misread as an exhausted budget.
 export async function consumePlacesQuota(count: number): Promise<boolean> {
   const result = await pool.query(
     `UPDATE settings
@@ -48,5 +50,14 @@ export async function consumePlacesQuota(count: number): Promise<boolean> {
        END`,
     [count, MAX_PLACES_CALLS_PER_DAY]
   )
-  return (result.rowCount ?? 0) > 0
+  if ((result.rowCount ?? 0) > 0) return true
+
+  // Row untouched: either today's budget is spent, or the settings row is
+  // missing. Distinguish the two so a missing row surfaces as a config error
+  // rather than a silent, misleading "quota exhausted".
+  const settings = await pool.query('SELECT 1 FROM settings WHERE id = 1')
+  if (settings.rows.length === 0) {
+    throw new Error('Settings table row with id = 1 not found.')
+  }
+  return false
 }

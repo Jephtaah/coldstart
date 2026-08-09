@@ -81,6 +81,7 @@ export async function GET() {
 
     let totalDiscovered = 0
     const exhausted: string[] = []
+    const partial: string[] = []
     const errors: string[] = []
     let quotaExhausted = false
 
@@ -103,9 +104,17 @@ export async function GET() {
         break
       }
 
+      // A run stopped by a transient pagination error is partial: it neither
+      // proves the niche is dry nor exhausts it.
+      if (result.status === 'partial') {
+        partial.push(`${niche.label} in ${niche.city}`)
+        continue
+      }
+
       // Only a discovery run that actually completed and found nothing new can
-      // exhaust a niche — a failed or quota-skipped run never marks it so.
-      if (result.inserted === 0) {
+      // exhaust a niche — a failed, partial, or quota-skipped run never marks
+      // it so.
+      if (result.inserted === 0 && result.status === 'ok') {
         const pendingResult = await pool.query(
           `SELECT COUNT(*) FROM leads WHERE niche_id = $1 AND status = ANY($2::text[])`,
           [niche.id, PENDING_LEAD_STATUSES]
@@ -149,6 +158,7 @@ export async function GET() {
       count: totalDiscovered,
       quotaRemaining,
       ...(exhausted.length > 0 && { exhausted }),
+      ...(partial.length > 0 && { partial }),
       ...(expandedCount > 0 && { expandedCount }),
       ...(quotaExhausted && { quotaExhausted: true }),
       ...(errors.length > 0 && { error: errors.join('; ') }),

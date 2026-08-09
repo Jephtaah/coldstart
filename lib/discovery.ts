@@ -28,7 +28,12 @@ interface PlaceWithPage {
   pageIndex: number
 }
 
-export type DiscoveryStatus = 'ok' | 'quota_exhausted'
+// 'ok' — pagination completed cleanly (this is the only status that can prove a
+//        niche is genuinely dry).
+// 'partial' — a transient non-quota fetch error stopped pagination before it
+//        finished, so the run proves nothing about exhaustion.
+// 'quota_exhausted' — the daily Places budget ran out mid-run.
+export type DiscoveryStatus = 'ok' | 'partial' | 'quota_exhausted'
 
 export interface DiscoverResult {
   inserted: number
@@ -135,6 +140,7 @@ export async function discoverBusinesses(
       }
       if (page === 0) throw err
       console.error(`Places pagination stopped at page ${page + 1}:`, err)
+      status = 'partial'
       break
     }
 
