@@ -71,5 +71,3 @@ Three tabs, backed by `app/page.tsx` + `components/DashboardClient.tsx`:
 ## Automation
 
 `.github/workflows/daily-run.yml` runs the pipeline via a daily cron (`13:00 UTC`): first it calls `GET $APP_URL/api/discover` once to top up leads, then it calls `GET $APP_URL/api/run-pipeline` repeatedly until no work remains.
-
-The Places daily budget needs two extra columns on the `settings` row — apply the idempotent migration in [`docs/sql/add-places-budget.sql`](docs/sql/add-places-budget.sql) (Neon SQL Editor) before enabling discovery.
