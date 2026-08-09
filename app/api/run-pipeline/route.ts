@@ -15,7 +15,8 @@ import {
   BOUNCE_ALERT_THRESHOLD,
   COMPLAINT_ALERT_THRESHOLD,
 } from '@/lib/constants'
-import { Resend } from 'resend'
+import { recordError } from '@/lib/errors'
+import { requireCronAuth } from '@/lib/cronAuth'
 
 export const dynamic = 'force-dynamic'
 
@@ -34,6 +35,19 @@ interface StageResult {
 interface RemainingCap {
   initial: number
   followups: number
+}
+
+// A lead that throws while being processed would otherwise stay in its current
+// status and keep `hasRemaining` true forever, making the workflow loop spin
+// through its max iterations every day. Moving it to 'failed' (best effort)
+// takes it out of the work queues; failed leads are intentionally kept for
+// inspection on the dashboard.
+async function failLead(leadId: string): Promise<void> {
+  try {
+    await pool.query('UPDATE leads SET status = $1 WHERE id = $2', ['failed', leadId])
+  } catch (err: unknown) {
+    console.error(`Failed to mark lead ${leadId} as failed:`, err)
+  }
 }
 
 async function getRemainingCap(): Promise<RemainingCap> {
@@ -130,29 +144,24 @@ async function computeHasRemaining(
   return hasSendWork || hasFollowupWork || hasProduceWork
 }
 
-async function sendErrorAlert(results: Record<string, StageResult>): Promise<void> {
-  const failedStages = Object.entries(results).filter(([, res]) => !res.success || res.error)
-  if (failedStages.length === 0 || !process.env.RESEND_API_KEY || !process.env.REPLY_TO_EMAIL) {
-    return
-  }
-
-  try {
-    const resend = new Resend(process.env.RESEND_API_KEY)
-    const senderDomain = process.env.SENDER_DOMAIN || 'example.com'
-    const senderName = process.env.SENDER_NAME
-    const fromEmail = senderName ? `${senderName} <outreach@${senderDomain}>` : `outreach@${senderDomain}`
-    const errorSummary = failedStages
-      .map(([stage, res]) => `- ${stage}: ${res.error || 'Failed'}`)
-      .join('\n')
-
-    await resend.emails.send({
-      from: fromEmail,
-      to: process.env.REPLY_TO_EMAIL,
-      subject: '[ColdStart Alert] Pipeline Run Encountered Errors',
-      text: `The cold outreach pipeline ran on ${new Date().toISOString()} with errors in the following stages:\n\n${errorSummary}\n\nFull results:\n${JSON.stringify(results, null, 2)}`,
-    })
-  } catch (alertErr) {
-    console.error('Failed to send pipeline error alert email:', alertErr)
+// Persists every failed stage of a run to the errors table so the operator can
+// review them on the dashboard. Runs after a run completes, so all failures are
+// recorded even when a stage throws early.
+async function recordStageErrors(results: Record<string, StageResult>): Promise<void> {
+  for (const [stage, res] of Object.entries(results)) {
+    if (!res.success || res.error) {
+      await recordError({
+        source: 'pipeline',
+        stage,
+        message: res.error || 'Stage failed without an error message',
+        context: {
+          processed: res.processed ?? null,
+          count: res.count ?? null,
+          bounces: res.bounces ?? null,
+          complaints: res.complaints ?? null,
+        },
+      })
+    }
   }
 }
 
@@ -173,7 +182,10 @@ async function getSendBacklog(): Promise<{ toSend: number; toFollowup: number }>
   }
 }
 
-export async function GET() {
+export async function GET(request: Request) {
+  const authError = requireCronAuth(request)
+  if (authError) return authError
+
   const results: Record<string, StageResult> = {}
 
   // Compute today's remaining send budgets. Initial sends are limited by the
@@ -217,7 +229,7 @@ export async function GET() {
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err)
     results.gate = { success: false, error: message }
-    await sendErrorAlert(results)
+    await recordStageErrors(results)
     return NextResponse.json({ success: false, error: message }, { status: 500 })
   }
 
@@ -258,7 +270,7 @@ export async function GET() {
       results.settings = { success: false, error: message }
     }
 
-    await sendErrorAlert(results)
+    await recordStageErrors(results)
 
     return NextResponse.json(
       { success: true, sendMode: true, hasRemaining, results },
@@ -286,6 +298,7 @@ export async function GET() {
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err)
         errors.push(`Lead ${lead.id}: ${message}`)
+        await failLead(lead.id)
       }
     }
 
@@ -350,6 +363,7 @@ export async function GET() {
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err)
         errors.push(`Lead ${lead.id}: ${message}`)
+        await failLead(lead.id)
       }
     }
 
@@ -375,7 +389,7 @@ export async function GET() {
     results.settings = { success: false, error: message }
   }
 
-  await sendErrorAlert(results)
+  await recordStageErrors(results)
 
   return NextResponse.json({ success: true, hasRemaining, results }, { status: 200 })
 }

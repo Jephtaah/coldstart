@@ -14,12 +14,12 @@ Each scheduled run executes the full loop:
 6. **Sending** — initial emails go out via Resend, weakest-SEO first, within the daily cap. Exactly one follow-up is sent 7+ days later per lead, on a separate daily budget.
 7. **Niche expansion** — when no active niches remain, the AI proposes 3–5 new industry/city combinations (with reasoning) so the pipeline keeps running on its own.
 
-Stage failures send an alert email to the operator instead of halting the run. Each stage is bounded per run (e.g. 5 niches, 12 scrapes, 8 generations, 8 email searches) so it fits inside Vercel's function timeout.
+Stage failures are recorded in the `errors` table and shown on the dashboard's Error Log tab instead of halting the run. Each stage is bounded per run (e.g. 5 niches, 12 scrapes, 8 generations, 8 email searches) so it fits inside Vercel's function timeout.
 
 ## Tech stack
 
 - **Next.js 16** (App Router, TypeScript, Tailwind CSS v4) — dashboard + API routes
-- **Neon** (serverless Postgres) via plain `pg`, no ORM — 5 tables: `niches`, `leads`, `settings`, `suppressed_places`, `suppressed_emails`
+- **Neon** (serverless Postgres) via plain `pg`, no ORM — 6 tables: `niches`, `leads`, `settings`, `suppressed_places`, `suppressed_emails`, `errors`
 - **Google Places API (New)** — business discovery
 - **DeepSeek API** — email/follow-up generation and niche suggestion
 - **Resend** — email delivery + open-tracking/bounce/complaint webhook
@@ -46,7 +46,7 @@ Create `.env.local` (never commit it):
 | `RESEND_API_KEY` | Resend key with sending access |
 | `SENDER_DOMAIN` | Verified sending domain (emails go out from `outreach@<domain>`) |
 | `SENDER_NAME` | Optional display name shown as the sender (omitted if unset) |
-| `REPLY_TO_EMAIL` | Where replies and pipeline failure alerts land |
+| `REPLY_TO_EMAIL` | Where replies land |
 | `RESEND_WEBHOOK_SECRET` | Resend webhook signing secret (`whsec_…`), used to verify webhook requests |
 
 The GitHub Actions schedule additionally uses an `APP_URL` repository secret pointing at the deployed app.
@@ -60,16 +60,16 @@ Three tabs, backed by `app/page.tsx` + `components/DashboardClient.tsx`:
 - **Leads Directory** — all leads with pipeline status, SEO weakness badge, website, email, sent timestamps and open engagement; filterable by status (`new`, `scraped`, `generated`, `sent`, `followed_up`, `no_website`, `failed`), searchable, paginated (10/25/50 per page), with a modal to read each generated email.
 - **Targeting Matrix** — multi-select industries and US cities (minimum 3 of each enforced), the resulting `industries × cities` search-pool count, an add-custom-niche form, and the full niche registry with status/source/reasoning.
 - **Pipeline Settings** — daily send cap (1–100; initial sends hard-capped at 50/day, follow-ups on a separate 50/day budget) and an emergency pause toggle that halts all sending.
+- **Error Log** — pipeline and discovery stage failures recorded in the `errors` table, with a modal to inspect full error details. Replaces the old email-based failure alerts.
 
 ## API routes
 
 - `GET /api/run-pipeline` — runs the pipeline loop over leads already in the database (send backlog, then scraping → email sourcing → generation); returns per-stage results and whether more work remains (the GitHub Action loops on this). Does **not** call Google Places.
 - `GET /api/discover` — discovers new businesses from Google Places for active niches, enforces the daily Places call budget, marks genuinely exhausted niches, and triggers AI niche expansion. Runs independently; a failure here never affects `/api/run-pipeline`.
 - `POST /api/settings` — update settings, save targeting matrix, add a custom niche.
-- `POST /api/webhooks/resend` — records Resend `email.opened` events against leads, and handles `email.bounced`/`email.complained`: the lead is marked failed and the address is added to `suppressed_emails` so it can never be sent to again. The daily pipeline run also monitors 24h bounce/complaint counts and alerts the operator if they cross thresholds.
+- `POST /api/webhooks/resend` — records Resend `email.opened` events against leads, and handles `email.bounced`/`email.complained`: the lead is marked failed and the address is added to `suppressed_emails` so it can never be sent to again. The daily pipeline run also monitors 24h bounce/complaint counts and records a `pipeline` error in the `errors` table if they cross thresholds.
 
 ## Automation
 
 `.github/workflows/daily-run.yml` runs the pipeline via a daily cron (`13:00 UTC`): first it calls `GET $APP_URL/api/discover` once to top up leads, then it calls `GET $APP_URL/api/run-pipeline` repeatedly until no work remains.
 
-The Places daily budget needs two extra columns on the `settings` row — apply the idempotent migration in [`docs/sql/add-places-budget.sql`](docs/sql/add-places-budget.sql) (Neon SQL Editor) before enabling discovery.

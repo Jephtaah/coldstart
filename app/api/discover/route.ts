@@ -3,37 +3,23 @@ import { pool } from '@/lib/db'
 import { discoverBusinesses, type DiscoverResult } from '@/lib/discovery'
 import { expandNiches } from '@/lib/expansion'
 import { getPlacesQuotaRemaining } from '@/lib/placesQuota'
-import { Resend } from 'resend'
+import { recordError } from '@/lib/errors'
+import { requireCronAuth } from '@/lib/cronAuth'
 
 export const dynamic = 'force-dynamic'
 
 const MAX_NICHES_PER_RUN = 5
-const PENDING_LEAD_STATUSES = ['new', 'scraped', 'generated']
-
-async function sendDiscoverErrorAlert(summary: string): Promise<void> {
-  if (!process.env.RESEND_API_KEY || !process.env.REPLY_TO_EMAIL) return
-  try {
-    const resend = new Resend(process.env.RESEND_API_KEY)
-    const senderDomain = process.env.SENDER_DOMAIN || 'example.com'
-    const senderName = process.env.SENDER_NAME
-    const fromEmail = senderName ? `${senderName} <outreach@${senderDomain}>` : `outreach@${senderDomain}`
-    await resend.emails.send({
-      from: fromEmail,
-      to: process.env.REPLY_TO_EMAIL,
-      subject: '[ColdStart Alert] Discovery Run Encountered Errors',
-      text: `The discovery run on ${new Date().toISOString()} reported errors:\n\n${summary}`,
-    })
-  } catch (alertErr) {
-    console.error('Failed to send discovery error alert email:', alertErr)
-  }
-}
+const PENDING_LEAD_STATUSES = ['new', 'scraped', 'generated', 'no_website']
 
 // Discovery runs as a fully independent stage from the rest of the pipeline:
 // it only adds new leads from Google Places and manages the niche lifecycle
 // (exhaustion + expansion). It enforces a hard daily budget on billable Places
 // calls, and when that budget is spent it skips cleanly instead of failing — so
 // a quota outage never blocks scraping, generation, or sending elsewhere.
-export async function GET() {
+export async function GET(request: Request) {
+  const authError = requireCronAuth(request)
+  if (authError) return authError
+
   let quotaRemaining = 0
   try {
     quotaRemaining = await getPlacesQuotaRemaining()
@@ -91,6 +77,12 @@ export async function GET() {
         result = await discoverBusinesses(niche.label, niche.city, niche.id)
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err)
+        await recordError({
+          source: 'discover',
+          stage: 'discovery',
+          message: `Niche ${niche.label} in ${niche.city}`,
+          context: { error: message },
+        })
         errors.push(`Niche ${niche.label} in ${niche.city}: ${message}`)
         continue
       }
@@ -98,9 +90,20 @@ export async function GET() {
       totalDiscovered += result.inserted
 
       // Budget is spent: stop trying further niches for the day. Leads already
-      // collected by this run are unaffected.
+      // collected by this run are unaffected. A 403 config error on Google's
+      // side is surfaced here so the run reports an error and alerts instead
+      // of silently skipping for the rest of the day.
       if (result.status === 'quota_exhausted') {
         quotaExhausted = true
+        if (result.error) {
+          await recordError({
+            source: 'discover',
+            stage: 'discovery',
+            message: `Niche ${niche.label} in ${niche.city}`,
+            context: { error: result.error },
+          })
+          errors.push(`Niche ${niche.label} in ${niche.city}: ${result.error}`)
+        }
         break
       }
 
@@ -135,6 +138,11 @@ export async function GET() {
         expandedCount = await expandNiches()
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err)
+        await recordError({
+          source: 'discover',
+          stage: 'niche_expansion',
+          message,
+        })
         errors.push(`Niche expansion: ${message}`)
       }
     }
@@ -147,11 +155,9 @@ export async function GET() {
       }
     }
 
-    // Only genuine failures warrant an alert. A quota-exhausted or paused run
-    // is expected and reported as a clean skip, not an error.
-    if (errors.length > 0) {
-      await sendDiscoverErrorAlert(errors.join('\n'))
-    }
+    // Genuine failures are recorded per-stage above as they happen; a
+    // quota-exhausted or paused run is expected and reported as a clean skip,
+    // not an error.
 
     return NextResponse.json({
       success: errors.length === 0,
@@ -165,7 +171,11 @@ export async function GET() {
     })
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err)
-    await sendDiscoverErrorAlert(message)
+    await recordError({
+      source: 'discover',
+      stage: 'run',
+      message,
+    })
     return NextResponse.json({ success: false, error: message }, { status: 500 })
   }
 }

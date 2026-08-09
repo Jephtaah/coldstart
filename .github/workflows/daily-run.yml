@@ -18,20 +18,22 @@ jobs:
       - name: Discover new businesses
         env:
           APP_URL: ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
           # Discovery runs on its own endpoint so a Google Places quota outage
           # (or timeout) can never hold up scraping/generation/sending below.
           echo "--- discovery ---"
-          curl -fsS -X GET "$APP_URL/api/discover" || true
+          curl -fsS -X GET -H "x-cron-secret: $CRON_SECRET" "$APP_URL/api/discover" || true
           echo ""
 
       - name: Run pipeline until backlog drained
         env:
           APP_URL: ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
           for i in $(seq 1 40); do
             echo "--- pipeline iteration $i ---"
-            RESPONSE=$(curl -fsS -X GET "$APP_URL/api/run-pipeline" || true)
+            RESPONSE=$(curl -fsS -X GET -H "x-cron-secret: $CRON_SECRET" "$APP_URL/api/run-pipeline" || true)
             if [ -z "$RESPONSE" ]; then
               echo "No response, retrying..."
               sleep 15

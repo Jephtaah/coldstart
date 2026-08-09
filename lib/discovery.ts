@@ -38,12 +38,24 @@ export type DiscoveryStatus = 'ok' | 'partial' | 'quota_exhausted'
 export interface DiscoverResult {
   inserted: number
   status: DiscoveryStatus
+  // Set when Google rejected a request in a way the operator needs to know
+  // about (HTTP 403 — API/billing not enabled) even though pagination stops.
+  error?: string
 }
 
-// Thrown when Google replies with a quota/rate-limit response (429, or 403 with
-// a billing/quota message). Distinct from ordinary request failures so discovery
-// can stop immediately instead of hammering the API for the rest of the day.
-export class PlacesQuotaError extends Error {}
+// Thrown when Google replies with a quota/rate-limit response (429 = rate
+// limit, 403 = billing/API not enabled). Distinct from ordinary request
+// failures so discovery can stop immediately instead of hammering the API for
+// the rest of the day. `status` carries the HTTP code so callers can decide
+// whether a 403 config problem should surface as an error instead of a quiet
+// skip.
+export class PlacesQuotaError extends Error {
+  readonly status: number
+  constructor(message: string, status: number) {
+    super(message)
+    this.status = status
+  }
+}
 
 const FIELDMASK =
   'places.id,places.displayName,places.formattedAddress,places.websiteUri,places.rating,places.userRatingCount,nextPageToken'
@@ -76,7 +88,8 @@ async function fetchPlacesPage(
       const body = await response.text()
       if (response.status === 429 || response.status === 403) {
         throw new PlacesQuotaError(
-          `Google Places API quota/rate-limit error (${response.status}): ${body}`
+          `Google Places API quota/rate-limit error (${response.status}): ${body}`,
+          response.status
         )
       }
       throw new Error(
@@ -111,6 +124,7 @@ export async function discoverBusinesses(
   const collected: PlaceWithPage[] = []
   let pageToken: string | undefined
   let status: DiscoveryStatus = 'ok'
+  let resultError: string | undefined
 
   for (let page = 0; page < MAX_PLACES_PAGES_PER_NICHE; page++) {
     // Every page fetch bills one Places request, so reserve it against the
@@ -136,6 +150,12 @@ export async function discoverBusinesses(
     } catch (err: unknown) {
       if (err instanceof PlacesQuotaError) {
         status = 'quota_exhausted'
+        // A 403 is a config problem (billing/API not enabled) that won't
+        // self-resolve tomorrow — surface it so the operator is alerted.
+        // A 429 is a transient rate limit and stays a quiet skip.
+        if (err.status === 403) {
+          resultError = err.message
+        }
         break
       }
       if (page === 0) throw err
@@ -163,7 +183,7 @@ export async function discoverBusinesses(
     ({ place }) => place.id && place.displayName?.text
   )
   if (validPlaces.length === 0) {
-    return { inserted: 0, status }
+    return { inserted: 0, status, ...(resultError && { error: resultError }) }
   }
 
   const placeIds = validPlaces.map(({ place }) => place.id)
@@ -227,5 +247,5 @@ export async function discoverBusinesses(
     }
   }
 
-  return { inserted: newLeadsCount, status }
+  return { inserted: newLeadsCount, status, ...(resultError && { error: resultError }) }
 }
