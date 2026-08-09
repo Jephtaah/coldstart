@@ -22,8 +22,9 @@ export const DEFAULT_CITIES = [
   'Seattle, WA',
 ]
 
-export const MAX_PLACES_PAGES_PER_NICHE = 5
+export const MAX_PLACES_PAGES_PER_NICHE = 3
 export const PLACES_PAGES_TO_SKIP = 2
+export const MAX_PLACES_CALLS_PER_DAY = 100
 export const MAX_SEO_SCORE_TO_SEND = 65
 export const MAX_INITIAL_SENDS_PER_DAY = 50
 export const MAX_FOLLOWUPS_PER_DAY = 50

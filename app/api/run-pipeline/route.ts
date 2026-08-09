@@ -1,11 +1,9 @@
 import { NextResponse } from 'next/server'
 import { pool } from '@/lib/db'
-import { discoverBusinesses } from '@/lib/discovery'
 import { scrapeWebsite } from '@/lib/scraper'
 import { generateEmail } from '@/lib/generator'
 import { sendBatch } from '@/lib/sender'
 import { sendFollowUps } from '@/lib/followup'
-import { expandNiches } from '@/lib/expansion'
 import { sourceNoWebsiteEmails } from '@/lib/emailfinder'
 import {
   MAX_SEO_SCORE_TO_SEND,
@@ -21,10 +19,8 @@ import { Resend } from 'resend'
 
 export const dynamic = 'force-dynamic'
 
-const MAX_NICHES_PER_RUN = 5
 const MAX_SCRAPES_PER_RUN = 12
 const MAX_GENERATES_PER_RUN = 8
-const PENDING_LEAD_STATUSES = ['new', 'scraped', 'generated']
 
 interface StageResult {
   success: boolean
@@ -109,6 +105,10 @@ async function computeHasRemaining(
   remaining: number,
   remainingFollowups: number
 ): Promise<boolean> {
+  // Only work this route can do on its own: drain the send/follow-up backlogs
+  // and process leads already in the database. Discovery lives in its own
+  // endpoint (/api/discover) and never gates the pipeline loop, so a Places
+  // quota outage can't keep this route spinning.
   const pendingResult = await pool.query(
     `SELECT
        (SELECT COUNT(*) FROM leads WHERE status = 'new') AS to_scrape,
@@ -118,8 +118,7 @@ async function computeHasRemaining(
           AND NOT EXISTS (SELECT 1 FROM suppressed_emails se WHERE se.email = lower(leads.email))) AS to_send,
        (SELECT COUNT(*) FROM leads
         WHERE status = 'sent' AND initial_sent_at <= NOW() - INTERVAL '7 days' AND followup_sent_at IS NULL
-          AND NOT EXISTS (SELECT 1 FROM suppressed_emails se WHERE se.email = lower(leads.email))) AS to_followup,
-       (SELECT COUNT(*) FROM niches WHERE status = 'active') AS active_niches`,
+          AND NOT EXISTS (SELECT 1 FROM suppressed_emails se WHERE se.email = lower(leads.email))) AS to_followup`,
     [MAX_SEO_SCORE_TO_SEND]
   )
   const pending = pendingResult.rows[0]
@@ -127,9 +126,7 @@ async function computeHasRemaining(
   const hasFollowupWork = remainingFollowups > 0 && parseInt(pending.to_followup, 10) > 0
   const hasProduceWork =
     remaining > 0 &&
-    (parseInt(pending.to_scrape, 10) > 0 ||
-      parseInt(pending.to_generate, 10) > 0 ||
-      parseInt(pending.active_niches, 10) > 0)
+    (parseInt(pending.to_scrape, 10) > 0 || parseInt(pending.to_generate, 10) > 0)
   return hasSendWork || hasFollowupWork || hasProduceWork
 }
 
@@ -269,64 +266,11 @@ export async function GET() {
     )
   }
 
-  // Produce mode: refill the pipeline. No sending happens here — newly
-  // generated leads are picked up by the send gate on a later invocation.
-  // Stage 1: Discovery
-  try {
-    const nichesResult = await pool.query(
-      'SELECT id, label, city FROM niches WHERE status = $1 LIMIT $2',
-      ['active', MAX_NICHES_PER_RUN]
-    )
-    let totalDiscovered = 0
-    const errors: string[] = []
-
-    for (const niche of nichesResult.rows) {
-      try {
-        const count = await discoverBusinesses(niche.label, niche.city, niche.id)
-        totalDiscovered += count
-        if (count === 0) {
-          const pendingResult = await pool.query(
-            `SELECT COUNT(*) FROM leads WHERE niche_id = $1 AND status = ANY($2::text[])`,
-            [niche.id, PENDING_LEAD_STATUSES]
-          )
-          const pendingCount = parseInt(pendingResult.rows[0].count, 10)
-          if (pendingCount === 0) {
-            await pool.query('UPDATE niches SET status = $1 WHERE id = $2', ['exhausted', niche.id])
-          }
-        }
-      } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err)
-        errors.push(`Niche ${niche.label} in ${niche.city}: ${message}`)
-      }
-    }
-
-    // Check if any active niches remain, if not trigger expandNiches
-    let expandedCount = 0
-    const activeCheck = await pool.query(
-      'SELECT COUNT(*) FROM niches WHERE status = $1',
-      ['active']
-    )
-    if (parseInt(activeCheck.rows[0].count, 10) === 0) {
-      try {
-        expandedCount = await expandNiches()
-      } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err)
-        errors.push(`Niche expansion: ${message}`)
-      }
-    }
-
-    results.discovery = {
-      success: errors.length === 0,
-      count: totalDiscovered,
-      ...(expandedCount > 0 && { expandedCount }),
-      ...(errors.length > 0 && { error: errors.join('; ') }),
-    }
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err)
-    results.discovery = { success: false, error: message }
-  }
-
-  // Stage 2: Scraping
+  // Produce mode: refill the pipeline from leads already in the database. No
+  // sending happens here — newly generated leads are picked up by the send gate
+  // on a later invocation. Discovery of new businesses is a separate concern
+  // handled by /api/discover, so this route never depends on Google Places.
+  // Stage 1: Scraping
   try {
     const leadsResult = await pool.query(
       'SELECT id FROM leads WHERE status = $1 ORDER BY seo_score ASC NULLS LAST LIMIT $2',
@@ -355,7 +299,7 @@ export async function GET() {
     results.scraping = { success: false, error: message }
   }
 
-  // Stage 2b: Source emails for no-website leads via web search. Leads that get
+  // Stage 2: Source emails for no-website leads via web search. Leads that get
   // an email move to 'scraped' and flow into generation; leads with no findable
   // email are deleted so the database stays lean.
   try {

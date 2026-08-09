@@ -158,15 +158,17 @@ insert into niches (label, city, status, source) values
 
 **What it needs to do:**
 - Call Google Places Text Search (New): `POST https://places.googleapis.com/v1/places:searchText`
-- Headers: `X-Goog-Api-Key: <key>`, `X-Goog-FieldMask: places.id,places.displayName,places.formattedAddress,places.websiteUri`
+- Headers: `X-Goog-Api-Key: <key>`, `X-Goog-FieldMask: places.id,places.displayName,places.formattedAddress,places.websiteUri,places.rating,places.userRatingCount,nextPageToken`
 - Body: `{ "textQuery": "<niche label> in <city>" }`
-- For each result, if `place_id` isn't already in the `leads` table, insert a new row with status `'new'`.
-- Insert businesses whether they have a `websiteUri` or not (if `websiteUri` is absent, set `website` column to `null`).
+- Paginate with `nextPageToken` up to `MAX_PLACES_PAGES_PER_NICHE` (3) pages, but only keep the deep pages — skip the first `PLACES_PAGES_TO_SKIP` (2) prominence-ranked pages so outreach targets the businesses that rank low on Google.
+- Every page fetch is one billable call, reserved atomically against the daily Places budget (`MAX_PLACES_CALLS_PER_DAY`, tracked in `settings.places_used_date` / `places_used_count` via `consumePlacesQuota`). When the budget is spent, stop paginating and mark the run `quota_exhausted` — never fail or retry into the API.
+- For each kept place, skip it if its `place_id` is already in `leads` or `suppressed_places`. Score discovery signals (website, rating, review count, page depth); places scoring at/above the send cutoff are suppressed and never stored. Insert the rest with status `'new'` (has a `websiteUri`) or `'no_website'` (no website).
+- Return `DiscoverResult { inserted, status }` where `status` is `'ok'` (clean completion), `'partial'` (a transient fetch error stopped pagination — proves nothing about exhaustion), or `'quota_exhausted'`.
 
 **AI prompt to paste:**
-> Write a TypeScript function `discoverBusinesses(nicheLabel: string, city: string, nicheId: string)` for a Next.js app using a Postgres connection pool (already set up as `pool` from `lib/db.ts`, a standard `pg` `Pool`) and Google Places API (New). It should: call `https://places.googleapis.com/v1/places:searchText` with header `X-Goog-Api-Key` from `process.env.GOOGLE_PLACES_API_KEY` and `X-Goog-FieldMask: places.id,places.displayName,places.formattedAddress,places.websiteUri`, body `{ textQuery: "${nicheLabel} in ${city}" }`. For each place in the response, check with a parameterized `pool.query` whether a lead with that `place_id` already exists in the `leads` table; if not, insert a new row with `business_name`, `address`, `website` (set to `place.websiteUri` or `null` if missing), `place_id`, `niche_id`, and `status: 'new'` using a parameterized `INSERT`. Return the count of new leads inserted. Include error handling if the API call fails.
+> Write a TypeScript function `discoverBusinesses(nicheLabel: string, city: string, nicheId: string): Promise<DiscoverResult>` in `lib/discovery.ts` for a Next.js app using a Postgres pool (`pool` from `lib/db.ts`) and Google Places API (New). For each page call `POST https://places.googleapis.com/v1/places:searchText` with headers `X-Goog-Api-Key` from `process.env.GOOGLE_PLACES_API_KEY` and `X-Goog-FieldMask: places.id,places.displayName,places.formattedAddress,places.websiteUri,places.rating,places.userRatingCount,nextPageToken`, body `{ textQuery: "${nicheLabel} in ${city}" }` (plus `pageToken` on later pages). Before each page fetch reserve one call with `consumePlacesQuota(1)` and stop paginating with status `'quota_exhausted'` if it returns false; also stop on HTTP 429/403. Keep only pages with index >= `PLACES_PAGES_TO_SKIP`. For each kept place, skip ones already present in `leads` or `suppressed_places`; score discovery signals and suppress/skip places scoring at/above `MAX_SEO_SCORE_TO_SEND`; otherwise insert a row with `business_name`, `address`, `website` (null if absent), `place_id`, `niche_id`, and `status` `'new'` (has website) or `'no_website'` (no website). Return `{ inserted, status }` where a transient non-quota fetch error after the first page sets `status` to `'partial'`.
 
-**Acceptance test:** running this function for one seeded niche adds real businesses (both with and without websites) to the `leads` table, and running it twice in a row doesn't create duplicates.
+**Acceptance test:** running this function for one seeded niche adds real businesses (both with and without websites) to the `leads` table, running it twice in a row doesn't create duplicates, and once `settings.places_used_count` reaches `MAX_PLACES_CALLS_PER_DAY` it returns `{ inserted: 0, status: 'quota_exhausted' }` without calling Google.
 
 ---
 
@@ -258,18 +260,17 @@ insert into niches (label, city, status, source) values
 
 ## M8 — Automation trigger (the daily runner)
 
-**Objective:** one endpoint that runs the full loop, called automatically every day.
+**Objective:** two endpoints — `/api/discover` (find new leads) and `/api/run-pipeline` (process and send leads already in the database) — called automatically every day. Discovery is a separate route with its own failure mode, so a Google Places quota outage or timeout can never block scraping, generation, or sending.
 
-**What the endpoint should do, in order:**
-1. For each `niche` with `status = 'active'`: run discovery (M3) for it.
-2. For all leads with `status = 'new'`: scrape (M4).
-3. For all leads with `status = 'scraped'`: generate (M5).
-4. Run `sendBatch()` (M6).
-5. Run `sendFollowUps()` (M7).
-6. Update `settings.last_run_at` to now.
+**What the endpoints should do, in order:**
+- `GET /api/discover` — for each `niche` with `status = 'active'` (up to `MAX_NICHES_PER_RUN`): run discovery (M3). Skip cleanly (`skipped: 'quota_exhausted'`) when the daily Places budget is spent. Mark a niche `exhausted` only when discovery actually completed and found nothing new (never on a failed, partial, or quota-skipped run). When no active niches remain, trigger AI niche expansion.
+- `GET /api/run-pipeline` — processes leads already in the database only; it never calls Google Places:
+  1. Send gate: if generated leads are due or follow-ups are ready, drain a bounded batch.
+  2. Otherwise produce: scrape leads with `status = 'new'` (M4), source emails for `no_website` leads, then generate for `status = 'scraped'` (M5).
+  3. Update `settings.last_run_at` to now, and return `hasRemaining` so the runner loops until the backlog is drained.
 
 **AI prompt to paste:**
-> Write a Next.js App Router API route at `app/api/run-pipeline/route.ts` with a `GET` handler. In order: fetch all niches with `status = 'active'` and call a `discoverBusinesses(label, city)` function for each; fetch all leads with `status = 'new'` and call `scrapeWebsite(id, website)` for each; fetch all leads with `status = 'scraped'` and call `generateEmail(id)` for each; call `sendBatch()`; call `sendFollowUps()`; then update the `settings` table's single row to set `last_run_at` to the current timestamp. Wrap each stage in a try/catch so one stage failing doesn't stop the others from running, and return a JSON summary of what happened at each stage (counts or error messages).
+> Write two Next.js App Router API routes. `app/api/discover/route.ts` (GET): fetch up to `MAX_NICHES_PER_RUN` niches with `status = 'active'` and call `discoverBusinesses(label, city, id)` for each; skip with `{ skipped: 'quota_exhausted' }` when `getPlacesQuotaRemaining()` is 0; stop after the first `status === 'quota_exhausted'` result; mark a niche `exhausted` only when the result has `inserted === 0 && status === 'ok'` and the niche has no pending leads; run `expandNiches()` when no active niches remain; return per-run counts. `app/api/run-pipeline/route.ts` (GET): first compute today's remaining send caps (`settings.daily_cap`, `MAX_INITIAL_SENDS_PER_DAY`, `MAX_FOLLOWUPS_PER_DAY`); if a send/follow-up backlog exists, call `sendBatch()`/`sendFollowUps()`; otherwise scrape leads with `status = 'new'`, source no-website emails, and generate for `status = 'scraped'`. Wrap each stage in try/catch so one failing stage doesn't stop the others, update `settings.last_run_at`, and return `{ hasRemaining, results }` where `hasRemaining` reflects only send/follow-up/scrape/generate work still in the database.
 
 **Then set up the schedule** — create `.github/workflows/daily-run.yml` in your repo:
 ```yaml
@@ -283,12 +284,28 @@ jobs:
   run:
     runs-on: ubuntu-latest
     steps:
-      - name: Call pipeline endpoint
+      - name: Discover new businesses
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
         run: |
-          curl -f -X GET "https://your-vercel-url.vercel.app/api/run-pipeline"
+          curl -fsS -X GET "$APP_URL/api/discover" || true
+
+      - name: Run pipeline until backlog drained
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+        run: |
+          for i in $(seq 1 40); do
+            RESPONSE=$(curl -fsS -X GET "$APP_URL/api/run-pipeline" || true)
+            echo "$RESPONSE"
+            if ! echo "$RESPONSE" | grep -q '"hasRemaining":true'; then
+              echo "Pipeline finished."
+              exit 0
+            fi
+            sleep 15
+          done
 ```
 
-**Acceptance test:** trigger the workflow manually from GitHub's Actions tab (`workflow_dispatch`) and confirm the pipeline runs end to end without you touching anything else. Then leave the schedule alone for a day and check it fired on its own.
+**Acceptance test:** trigger the workflow manually from GitHub's Actions tab (`workflow_dispatch`) and confirm discovery runs first, then the pipeline loops until `hasRemaining` is false — end to end without you touching anything else. Then leave the schedule alone for a day and check it fired on its own.
 
 ---
 

@@ -6,7 +6,7 @@ An autonomous cold outreach pipeline for a freelance web developer. It finds loc
 
 Each scheduled run executes the full loop:
 
-1. **Discovery** — Google Places Text Search (New) for each active niche (`"<industry> in <city>"`). Results are paginated past the first two prominence-ranked pages so outreach targets the businesses that rank low on Google. New leads are inserted (deduped by `place_id`, with a `suppressed_places` list so dropped businesses are never re-added).
+1. **Discovery** — runs on its own endpoint (`/api/discover`), separate from the rest of the pipeline, so a Google Places outage or quota exhaustion can never block scraping, generation, or sending. Google Places Text Search (New) runs for each active niche (`"<industry> in <city>"`). Results are paginated past the first two prominence-ranked pages so outreach targets the businesses that rank low on Google. New leads are inserted (deduped by `place_id`, with a `suppressed_places` list so dropped businesses are never re-added). Every page fetch is charged against a hard **daily Places budget** (`MAX_PLACES_CALLS_PER_DAY`, default 100, tracked in `settings.places_used_*`): once the budget is spent, discovery skips cleanly until the next day instead of failing and re-hammering the API.
 2. **SEO scoring** — every lead is scored 0–100 on SEO weakness using a penalty model: `100 − pagePenalty − reviewPenalty − ratingPenalty − noWebsitePenalty`. Page depth dominates (page 1 → 0, page 3 → 40, page 5+ → 65). Leads scoring 65+ are suppressed/deleted before they ever reach generation. Scraping adds on-page signals (missing title, meta description, mobile viewport, H1, thin content), merged 60/40 site/discovery.
 3. **Scraping** — each lead's website is fetched (with timeout/redirect handling), text is extracted with Cheerio, and emails are pulled via regex + `mailto:` links. Leads with no discoverable email are deleted and suppressed.
 4. **Email sourcing for no-website leads** — businesses without a website get an email search (DuckDuckGo HTML) instead of scraping; found emails move the lead to `scraped` with a "build a website" pitch, otherwise the lead is deleted.
@@ -63,10 +63,13 @@ Three tabs, backed by `app/page.tsx` + `components/DashboardClient.tsx`:
 
 ## API routes
 
-- `GET /api/run-pipeline` — runs the full pipeline loop; returns per-stage results and whether more work remains (the GitHub Action loops on this).
+- `GET /api/run-pipeline` — runs the pipeline loop over leads already in the database (send backlog, then scraping → email sourcing → generation); returns per-stage results and whether more work remains (the GitHub Action loops on this). Does **not** call Google Places.
+- `GET /api/discover` — discovers new businesses from Google Places for active niches, enforces the daily Places call budget, marks genuinely exhausted niches, and triggers AI niche expansion. Runs independently; a failure here never affects `/api/run-pipeline`.
 - `POST /api/settings` — update settings, save targeting matrix, add a custom niche.
 - `POST /api/webhooks/resend` — records Resend `email.opened` events against leads, and handles `email.bounced`/`email.complained`: the lead is marked failed and the address is added to `suppressed_emails` so it can never be sent to again. The daily pipeline run also monitors 24h bounce/complaint counts and alerts the operator if they cross thresholds.
 
 ## Automation
 
-`.github/workflows/daily-run.yml` runs the pipeline via a daily cron (`13:00 UTC`) and calls `GET $APP_URL/api/run-pipeline` repeatedly until no work remains.
+`.github/workflows/daily-run.yml` runs the pipeline via a daily cron (`13:00 UTC`): first it calls `GET $APP_URL/api/discover` once to top up leads, then it calls `GET $APP_URL/api/run-pipeline` repeatedly until no work remains.
+
+The Places daily budget needs two extra columns on the `settings` row — apply the idempotent migration in [`docs/sql/add-places-budget.sql`](docs/sql/add-places-budget.sql) (Neon SQL Editor) before enabling discovery.
