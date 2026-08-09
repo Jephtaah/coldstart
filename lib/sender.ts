@@ -1,15 +1,20 @@
 import { pool } from './db'
 import { Resend } from 'resend'
-import { MAX_SEO_SCORE_TO_SEND, MAX_INITIAL_SENDS_PER_DAY } from './constants'
+import { MAX_SEO_SCORE_TO_SEND, MAX_INITIAL_SENDS_PER_DAY, RESEND_TIMEOUT_MS } from './constants'
 import { toHtml, sendDelayMs, sleep } from './emailFormat'
 
-export async function sendBatch(maxSends: number): Promise<number> {
+export async function sendBatch(maxSends: number, isExhausted?: () => boolean): Promise<number> {
   const apiKey = process.env.RESEND_API_KEY
   if (!apiKey) {
     throw new Error('RESEND_API_KEY is not set in environment variables.')
   }
 
-  const senderDomain = process.env.SENDER_DOMAIN || 'example.com'
+  // Fails closed instead of silently sending from outreach@example.com, which
+  // would be rejected by Resend (unverified domain) and mask a misconfiguration.
+  const senderDomain = process.env.SENDER_DOMAIN
+  if (!senderDomain) {
+    throw new Error('SENDER_DOMAIN is not set in environment variables.')
+  }
   const senderName = process.env.SENDER_NAME
   const fromEmail = senderName ? `${senderName} <outreach@${senderDomain}>` : `outreach@${senderDomain}`
 
@@ -65,6 +70,8 @@ export async function sendBatch(maxSends: number): Promise<number> {
   let successfullySent = 0
 
   for (const lead of leads) {
+    if (isExhausted?.()) break
+
     if (!lead.email || !lead.generated_subject || !lead.generated_body) {
       await pool.query('UPDATE leads SET status = $1 WHERE id = $2', ['failed', lead.id])
       continue
@@ -86,7 +93,7 @@ export async function sendBatch(maxSends: number): Promise<number> {
       )
 
       const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('Resend API timeout')), 10000)
+        setTimeout(() => reject(new Error('Resend API timeout')), RESEND_TIMEOUT_MS)
       )
 
       const emailResponse = (await Promise.race([emailPromise, timeoutPromise])) as Awaited<

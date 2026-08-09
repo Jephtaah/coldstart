@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useRef, useSyncExternalStore } from 'react'
 import { useRouter } from 'next/navigation'
+import { MAX_DAILY_CAP, MAX_INITIAL_SENDS_PER_DAY } from '@/lib/constants'
 
 interface Lead {
   id: string
@@ -46,10 +47,20 @@ interface Stats {
   sent_today: number
 }
 
+interface ErrorRecord {
+  id: string
+  source: 'pipeline' | 'discover'
+  stage: string
+  message: string
+  context: unknown | null
+  created_at: string
+}
+
 interface DashboardClientProps {
   initialSettings: Settings
   initialNiches: Niche[]
   initialLeads: Lead[]
+  initialErrors: ErrorRecord[]
   stats: Stats
   statusCounts: Record<string, number>
   defaultIndustries: string[]
@@ -152,6 +163,7 @@ export default function DashboardClient({
   initialSettings,
   initialNiches,
   initialLeads,
+  initialErrors,
   stats,
   statusCounts,
   defaultIndustries,
@@ -163,7 +175,7 @@ export default function DashboardClient({
     () => true,
     () => false
   )
-  const [activeTab, setActiveTab] = useState<'leads' | 'targeting' | 'settings'>('leads')
+  const [activeTab, setActiveTab] = useState<'leads' | 'targeting' | 'settings' | 'errors'>('leads')
 
   // Leads state
   const [statusFilter, setStatusFilter] = useState<string>('all')
@@ -173,6 +185,11 @@ export default function DashboardClient({
   const [leadsPageSize, setLeadsPageSize] = useState(25)
   const [nichesPage, setNichesPage] = useState(1)
   const [nichesPageSize, setNichesPageSize] = useState(10)
+
+  // Errors state
+  const [expandedErrorId, setExpandedErrorId] = useState<string | null>(null)
+  const [errorsPage, setErrorsPage] = useState(1)
+  const [errorsPageSize, setErrorsPageSize] = useState(25)
 
   // Settings state
   const [dailyCap, setDailyCap] = useState(initialSettings.daily_cap)
@@ -190,6 +207,10 @@ export default function DashboardClient({
   const dialogRef = useRef<HTMLDivElement>(null)
   const selectedLead = initialLeads.find((lead) => lead.id === expandedLeadId) || null
   const isEmailModalOpen = expandedLeadId !== null && selectedLead !== null
+
+  const errorDialogRef = useRef<HTMLDivElement>(null)
+  const selectedError = initialErrors.find((error) => error.id === expandedErrorId) || null
+  const isErrorModalOpen = expandedErrorId !== null && selectedError !== null
 
   const FOCUSABLE_SELECTOR = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
 
@@ -227,6 +248,41 @@ export default function DashboardClient({
       previouslyFocused?.focus?.()
     }
   }, [isEmailModalOpen])
+
+  useEffect(() => {
+    if (!isErrorModalOpen) return
+    const dialog = errorDialogRef.current
+    const previouslyFocused = document.activeElement as HTMLElement | null
+    dialog?.focus()
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setExpandedErrorId(null)
+        return
+      }
+      if (e.key !== 'Tab' || !dialog) return
+      const focusable = Array.from(dialog.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR))
+      if (focusable.length === 0) return
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      const active = document.activeElement as HTMLElement | null
+      if (e.shiftKey && (active === first || active === dialog)) {
+        e.preventDefault()
+        last.focus()
+      } else if (!e.shiftKey && (active === last || active === dialog)) {
+        e.preventDefault()
+        first.focus()
+      }
+    }
+
+    document.addEventListener('keydown', onKeyDown)
+    document.body.style.overflow = 'hidden'
+    return () => {
+      document.removeEventListener('keydown', onKeyDown)
+      document.body.style.overflow = ''
+      previouslyFocused?.focus?.()
+    }
+  }, [isErrorModalOpen])
 
   // Determine which industries and cities are currently active based on initialNiches
   const activeNiches = initialNiches.filter((n) => n.status === 'active')
@@ -286,6 +342,13 @@ export default function DashboardClient({
   const pagedNiches = initialNiches.slice(
     (currentNichesPage - 1) * nichesPageSize,
     currentNichesPage * nichesPageSize
+  )
+
+  const errorsTotalPages = Math.max(1, Math.ceil(initialErrors.length / errorsPageSize))
+  const currentErrorsPage = Math.min(errorsPage, errorsTotalPages)
+  const pagedErrors = initialErrors.slice(
+    (currentErrorsPage - 1) * errorsPageSize,
+    currentErrorsPage * errorsPageSize
   )
 
   // Handlers
@@ -456,12 +519,21 @@ export default function DashboardClient({
             <p className="text-[11px] font-mono uppercase tracking-widest text-[#71716B]">Sent Today / Cap</p>
             <div className="flex items-baseline justify-between mt-2">
               <span className="text-3xl font-semibold tracking-tight text-[#141413] font-mono">
-                {stats.sent_today} <span className="text-sm text-[#8C8C85] font-normal">/ {initialSettings.daily_cap}</span>
+                {stats.sent_today}{' '}
+                <span className="text-sm text-[#8C8C85] font-normal">
+                  / {Math.min(initialSettings.daily_cap, MAX_INITIAL_SENDS_PER_DAY)}
+                </span>
               </span>
               <div className="w-16 bg-[#EFEFED] h-2 rounded-full overflow-hidden border border-[#D9D9D3]">
                 <div
                   className="bg-amber-600 h-full rounded-full transition-all duration-500"
-                  style={{ width: `${Math.min(100, (stats.sent_today / Math.max(1, initialSettings.daily_cap)) * 100)}%` }}
+                  style={{
+                    width: `${Math.min(
+                      100,
+                      (stats.sent_today / Math.max(1, Math.min(initialSettings.daily_cap, MAX_INITIAL_SENDS_PER_DAY))) *
+                        100
+                    )}%`,
+                  }}
                 />
               </div>
             </div>
@@ -526,6 +598,19 @@ export default function DashboardClient({
               }`}
             >
               Pipeline Settings
+            </button>
+            <button
+              onClick={() => setActiveTab('errors')}
+              className={`py-3.5 px-1 border-b-2 font-medium text-sm transition-colors flex items-center gap-2 ${
+                activeTab === 'errors'
+                  ? 'border-[#141413] text-[#141413]'
+                  : 'border-transparent text-[#71716B] hover:text-[#383833] hover:border-[#CCCCCC]'
+              }`}
+            >
+              <span>Error Log</span>
+              <span className="text-xs font-mono px-2 py-0.5 rounded-full bg-[#EFEFED] text-[#595955] border border-[#D9D9D3]">
+                {initialErrors.length}
+              </span>
             </button>
           </nav>
         </div>
@@ -633,8 +718,6 @@ export default function DashboardClient({
                                 ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
                                 : lead.status === 'failed'
                                 ? 'bg-rose-50 text-rose-800 border-rose-200'
-                                : lead.status === 'skipped'
-                                ? 'bg-slate-50 text-slate-700 border-slate-200'
                                 : lead.status === 'no_website'
                                 ? 'bg-orange-50 text-orange-800 border-orange-200'
                                 : lead.status === 'generated' || lead.status === 'scraped'
@@ -647,8 +730,6 @@ export default function DashboardClient({
                                 ? 'bg-emerald-600'
                                 : lead.status === 'failed'
                                 ? 'bg-rose-600'
-                                : lead.status === 'skipped'
-                                ? 'bg-slate-500'
                                 : lead.status === 'no_website'
                                 ? 'bg-orange-600'
                                 : lead.status === 'generated' || lead.status === 'scraped'
@@ -961,7 +1042,7 @@ export default function DashboardClient({
                 <input
                   type="number"
                   min="1"
-                  max="100"
+                  max={MAX_DAILY_CAP}
                   value={dailyCap}
                   onChange={(e) => setDailyCap(parseInt(e.target.value, 10) || 1)}
                   className="w-full px-3.5 py-2.5 text-sm bg-white border border-[#D9D9D3] rounded-xl focus:outline-none focus:ring-2 focus:ring-[#141413]/20 focus:border-[#141413]"
@@ -1002,6 +1083,89 @@ export default function DashboardClient({
                 </button>
               </div>
             </form>
+          </div>
+        )}
+
+        {/* Tab 4: Errors */}
+        {activeTab === 'errors' && (
+          <div className="bg-white rounded-xl border border-[#E6E6DF] shadow-[0_1px_3px_rgba(0,0,0,0.02)] overflow-hidden">
+            <div className="p-4 sm:p-5 border-b border-[#E6E6DF] bg-[#FAFAF7]">
+              <h2 className="text-base font-semibold tracking-tight text-[#141413]">Pipeline & Discovery Error Log</h2>
+              <p className="text-sm text-[#71716B] mt-0.5">
+                Stage failures are recorded here instead of being emailed. Click a row to inspect full details.
+              </p>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm">
+                <thead className="bg-[#F5F5F0] border-b border-[#E6E6DF] text-[#6B6B65] font-mono text-xs uppercase tracking-wider">
+                  <tr>
+                    <th className="px-6 py-3.5 font-medium w-[14%] min-w-[140px]">Timestamp</th>
+                    <th className="px-6 py-3.5 font-medium w-[10%] min-w-[110px]">Source</th>
+                    <th className="px-6 py-3.5 font-medium w-[14%] min-w-[130px]">Stage</th>
+                    <th className="px-6 py-3.5 font-medium w-[54%] min-w-[220px]">Message</th>
+                    <th className="px-6 py-3.5 font-medium w-[8%] min-w-[100px]"></th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[#EFEFED]">
+                  {pagedErrors.length === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="px-6 py-12 text-center text-[#71716B]">
+                        <div className="max-w-xs mx-auto space-y-2">
+                          <p className="font-medium text-[#383833]">No errors recorded</p>
+                          <p className="text-xs text-[#8C8C85]">Failures from pipeline and discovery runs will show up here.</p>
+                        </div>
+                      </td>
+                    </tr>
+                  ) : (
+                    pagedErrors.map((error) => (
+                      <tr key={error.id} className="hover:bg-[#FCFCFA] transition-colors">
+                        <td className="px-6 py-4 font-mono text-xs text-[#71716B] whitespace-nowrap">
+                          {mounted ? new Date(error.created_at).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }) : '…'}
+                        </td>
+                        <td className="px-6 py-4">
+                          <span
+                            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium capitalize border ${
+                              error.source === 'pipeline'
+                                ? 'bg-sky-50 text-sky-800 border-sky-200'
+                                : 'bg-violet-50 text-violet-800 border-violet-200'
+                            }`}
+                          >
+                            <span className={`w-1.5 h-1.5 rounded-full ${error.source === 'pipeline' ? 'bg-sky-600' : 'bg-violet-600'}`} />
+                            {error.source}
+                          </span>
+                        </td>
+                        <td className="px-6 py-4">
+                          <span className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium bg-rose-50 text-rose-800 border border-rose-200 capitalize">
+                            {error.stage.replace('_', ' ')}
+                          </span>
+                        </td>
+                        <td className="px-6 py-4 text-[#383833] text-xs max-w-md truncate" title={error.message}>
+                          {error.message}
+                        </td>
+                        <td className="px-6 py-4">
+                          <button
+                            onClick={() => setExpandedErrorId(error.id)}
+                            className="inline-flex items-center gap-1 text-xs font-semibold whitespace-nowrap text-white bg-blue-600 hover:bg-blue-700 px-3 py-1.5 rounded-lg transition-colors shadow-sm"
+                          >
+                            View Details
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+            <PaginationControls
+              page={currentErrorsPage}
+              pageSize={errorsPageSize}
+              total={initialErrors.length}
+              onPageChange={setErrorsPage}
+              onPageSizeChange={(size) => {
+                setErrorsPageSize(size)
+                setErrorsPage(1)
+              }}
+            />
           </div>
         )}
       </main>
@@ -1066,6 +1230,74 @@ export default function DashboardClient({
                   </div>
                   <div className="font-semibold text-[#141413] mb-2">{selectedLead.followup_subject}</div>
                   <p className="text-sm text-[#383833] whitespace-pre-wrap leading-relaxed">{selectedLead.followup_body || '—'}</p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Error Detail Modal */}
+      {selectedError && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6">
+          <div
+            className="absolute inset-0 bg-[#141413]/50 backdrop-blur-sm"
+            onClick={() => setExpandedErrorId(null)}
+          />
+          <div
+            ref={errorDialogRef}
+            role="dialog"
+            aria-modal="true"
+            tabIndex={-1}
+            aria-label={`Error detail for ${selectedError.source} / ${selectedError.stage}`}
+            className="relative bg-white w-full max-w-2xl max-h-[85vh] flex flex-col rounded-2xl border border-[#E6E6DF] shadow-2xl overflow-hidden focus:outline-none"
+          >
+            <div className="px-6 py-5 border-b border-[#E6E6DF] bg-[#FAFAF7] flex items-start justify-between gap-4">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2 mb-1">
+                  <span
+                    className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-mono uppercase tracking-wider border ${
+                      selectedError.source === 'pipeline'
+                        ? 'bg-sky-50 text-sky-800 border-sky-200'
+                        : 'bg-violet-50 text-violet-800 border-violet-200'
+                    }`}
+                  >
+                    {selectedError.source}
+                  </span>
+                  <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-mono uppercase tracking-wider bg-rose-50 text-rose-800 border border-rose-200 capitalize">
+                    {selectedError.stage.replace('_', ' ')}
+                  </span>
+                </div>
+                <h2 className="text-base font-semibold tracking-tight text-[#141413]">
+                  {selectedError.source} run error
+                </h2>
+                <p className="text-xs font-mono text-[#71716B] mt-0.5">
+                  {mounted ? new Date(selectedError.created_at).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : '…'}
+                </p>
+              </div>
+              <button
+                onClick={() => setExpandedErrorId(null)}
+                aria-label="Close error detail"
+                className="shrink-0 w-8 h-8 inline-flex items-center justify-center rounded-lg text-[#595955] hover:bg-[#ECECE7] hover:text-[#141413] transition-colors"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <div className="px-6 py-5 overflow-y-auto space-y-5">
+              <div className="bg-rose-50 border border-rose-200 rounded-xl p-5">
+                <span className="block text-[10px] font-mono uppercase tracking-widest text-rose-700 mb-2">Message</span>
+                <p className="text-sm text-[#383833] whitespace-pre-wrap leading-relaxed">{selectedError.message}</p>
+              </div>
+              {Boolean(selectedError.context) && (
+                <div className="bg-[#FAFAF7] border border-[#E6E6DF] rounded-xl p-5">
+                  <span className="block text-[10px] font-mono uppercase tracking-widest text-[#71716B] mb-2">Context</span>
+                  <pre className="text-xs font-mono text-[#383833] whitespace-pre-wrap leading-relaxed bg-white border border-[#E6E6DF] rounded-lg p-4 overflow-x-auto">
+                    {typeof selectedError.context === 'string'
+                      ? selectedError.context
+                      : JSON.stringify(selectedError.context, null, 2)}
+                  </pre>
                 </div>
               )}
             </div>

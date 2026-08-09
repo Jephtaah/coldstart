@@ -2,6 +2,7 @@ import { pool } from './db'
 import * as cheerio from 'cheerio'
 import { scoreSiteSignals, mergeSeoScores, DEFAULT_SEO_SCORE, type SiteSignals } from './seo'
 import { isSuppressedEmail } from './suppression'
+import { SCRAPE_TIMEOUT_MS } from './constants'
 
 const EMAIL_REGEX = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g
 
@@ -44,6 +45,35 @@ export function extractEmailsFromHtml(html: string): string[] {
   return Array.from(new Set([...mailtoEmails, ...extractEmails(html)]))
 }
 
+function emailDomain(email: string): string {
+  const at = email.lastIndexOf('@')
+  return at === -1 ? '' : email.slice(at + 1).toLowerCase()
+}
+
+function siteDomain(siteUrl: string): string {
+  const withScheme = /^https?:\/\//i.test(siteUrl) ? siteUrl : `https://${siteUrl}`
+  try {
+    return new URL(withScheme).hostname.toLowerCase().replace(/^www\./, '')
+  } catch {
+    return ''
+  }
+}
+
+// Pages often embed addresses that aren't the business's own (agency credits,
+// partner listings, embedded-tool support inboxes). Prefer an email on the
+// business's own domain, falling back to the first match otherwise.
+function pickPreferredEmail(emails: string[], siteUrl: string): string {
+  const domain = siteDomain(siteUrl)
+  if (domain) {
+    const match = emails.find((email) => {
+      const d = emailDomain(email)
+      return d === domain || d.endsWith(`.${domain}`)
+    })
+    if (match) return match
+  }
+  return emails[0]
+}
+
 async function fetchPageTextAndEmails(
   url: string
 ): Promise<{ text: string; emails: string[]; siteSignals: SiteSignals }> {
@@ -53,7 +83,7 @@ async function fetchPageTextAndEmails(
   }
 
   const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), 10000)
+  const timeoutId = setTimeout(() => controller.abort(), SCRAPE_TIMEOUT_MS)
 
   try {
     const res = await fetch(formattedUrl, {
@@ -140,7 +170,7 @@ export async function scrapeWebsite(leadId: string): Promise<boolean> {
     const { text, emails, siteSignals } = await fetchPageTextAndEmails(website)
     let bestEmail = existingEmail
     if (!bestEmail && emails.length > 0) {
-      bestEmail = emails[0]
+      bestEmail = pickPreferredEmail(emails, website)
     }
 
     if (!bestEmail || bestEmail.trim() === '') {

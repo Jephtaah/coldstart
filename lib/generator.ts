@@ -1,12 +1,8 @@
 import { pool } from './db'
 import { isSuppressedEmail } from './suppression'
+import { callDeepSeekJson, parseEmailResponse } from './ai'
 
 export async function generateEmail(leadId: string): Promise<boolean> {
-  const apiKey = process.env.DEEPSEEK_API_KEY || process.env.AI_API_KEY
-  if (!apiKey) {
-    throw new Error('DEEPSEEK_API_KEY or AI_API_KEY is not set in environment variables.')
-  }
-
   const result = await pool.query(
     'SELECT business_name, website, email, scraped_content, place_id FROM leads WHERE id = $1',
     [leadId]
@@ -72,53 +68,11 @@ Scraped Content / Context:
 ${scrapedContent}
 `
 
-  async function callAI(): Promise<{ subject: string; body: string } | null> {
-    for (let attempt = 0; attempt < 2; attempt++) {
-      const controller = new AbortController()
-      const timeoutId = setTimeout(() => controller.abort(), 20000)
-      try {
-        const res = await fetch('https://api.deepseek.com/chat/completions', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${apiKey}`,
-          },
-          body: JSON.stringify({
-            model: 'deepseek-v4-flash',
-            messages: [
-              { role: 'system', content: systemPrompt },
-              { role: 'user', content: `Generate the email for ${businessName}.` },
-            ],
-            temperature: 0.7,
-          }),
-          signal: controller.signal,
-        })
-        clearTimeout(timeoutId)
-
-        if (!res.ok) {
-          throw new Error(`DeepSeek API error: ${res.status} ${await res.text()}`)
-        }
-
-        const data = await res.json()
-        let content = data.choices?.[0]?.message?.content
-        if (!content) throw new Error('Empty response from DeepSeek API')
-
-        // Strip markdown code fences if present
-        content = content.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/\s*```$/, '').trim()
-
-        const parsed = JSON.parse(content)
-        if (typeof parsed.subject === 'string' && typeof parsed.body === 'string') {
-          return { subject: parsed.subject, body: parsed.body }
-        }
-      } catch {
-        clearTimeout(timeoutId)
-        // Retry on parse failure or network error
-      }
-    }
-    return null
-  }
-
-  const emailData = await callAI()
+  const emailData = await callDeepSeekJson(
+    systemPrompt,
+    `Generate the email for ${businessName}.`,
+    parseEmailResponse
+  )
 
   if (!emailData) {
     await pool.query('UPDATE leads SET status = $1 WHERE id = $2', ['failed', leadId])

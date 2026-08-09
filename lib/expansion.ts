@@ -1,4 +1,5 @@
 import { pool } from './db'
+import { callDeepSeekJson } from './ai'
 
 interface NicheRow {
   label: string
@@ -6,12 +7,17 @@ interface NicheRow {
   status: string
 }
 
-export async function expandNiches(): Promise<number> {
-  const apiKey = process.env.DEEPSEEK_API_KEY || process.env.AI_API_KEY
-  if (!apiKey) {
-    throw new Error('DEEPSEEK_API_KEY or AI_API_KEY is not set in environment variables.')
-  }
+interface NicheSuggestion {
+  label: string
+  city: string
+  reasoning: string
+}
 
+function nicheKey(label: string, city: string): string {
+  return `${label.trim().toLowerCase()}|${city.trim().toLowerCase()}`
+}
+
+export async function expandNiches(): Promise<number> {
   const result = await pool.query('SELECT label, city, status FROM niches')
   const allNiches: NicheRow[] = result.rows
 
@@ -23,6 +29,10 @@ export async function expandNiches(): Promise<number> {
   const triedList = allNiches
     .map((n) => `- ${n.label} in ${n.city} (${n.status})`)
     .join('\n')
+
+  // Defense in depth: never insert a combo that already exists (case-insensitive),
+  // even if the model re-suggests one from the "already tried" list.
+  const existingKeys = new Set(allNiches.map((n) => nicheKey(n.label, n.city)))
 
   const systemPrompt = `You are an AI assistant helping a freelance web developer find new local business niches and cities for cold email outreach.
 Your task is to suggest 3 to 5 NEW local-business niche and city combinations suitable for cold outreach offering website development and SEO optimization services.
@@ -40,69 +50,47 @@ Return STRICT JSON as an array of objects with this exact structure, with no oth
 ]
 `
 
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const controller = new AbortController()
-    const timeoutId = setTimeout(() => controller.abort(), 20000)
-    try {
-      const res = await fetch('https://api.deepseek.com/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-          model: 'deepseek-v4-flash',
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: 'Suggest new niche and city combinations.' },
-          ],
-          temperature: 0.7,
-        }),
-        signal: controller.signal,
-      })
-      clearTimeout(timeoutId)
-
-      if (!res.ok) {
-        throw new Error(`DeepSeek API error: ${res.status} ${await res.text()}`)
-      }
-
-      const data = await res.json()
-      let content = data.choices?.[0]?.message?.content
-      if (!content) throw new Error('Empty response from DeepSeek API')
-
-      content = content.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/\s*```$/, '').trim()
-
-      const parsed = JSON.parse(content)
-      if (!Array.isArray(parsed)) {
-        throw new Error('Parsed JSON is not an array')
-      }
-
-      let insertedCount = 0
-      for (const item of parsed) {
-        if (
-          typeof item.label === 'string' &&
-          typeof item.city === 'string' &&
-          typeof item.reasoning === 'string' &&
-          item.label.trim() !== '' &&
-          item.city.trim() !== ''
-        ) {
-          await pool.query(
-            `INSERT INTO niches (label, city, status, source, reasoning)
-             VALUES ($1, $2, 'active', 'ai_suggested', $3)`,
-            [item.label.trim(), item.city.trim(), item.reasoning.trim()]
-          )
-          insertedCount++
+  const suggestions = await callDeepSeekJson<NicheSuggestion[]>(
+    systemPrompt,
+    'Suggest new niche and city combinations.',
+    (value) => {
+      if (!Array.isArray(value)) return null
+      const items: NicheSuggestion[] = []
+      for (const item of value) {
+        if (typeof item !== 'object' || item === null) continue
+        const obj = item as Record<string, unknown>
+        if (typeof obj.label !== 'string' || typeof obj.city !== 'string' || typeof obj.reasoning !== 'string') {
+          continue
         }
+        const label = obj.label.trim()
+        const city = obj.city.trim()
+        if (label === '' || city === '') continue
+        items.push({ label, city, reasoning: obj.reasoning.trim() })
       }
-
-      if (insertedCount > 0) {
-        return insertedCount
-      }
-    } catch (err) {
-      clearTimeout(timeoutId)
-      console.error('Error in expandNiches:', err)
+      return items.length > 0 ? items : null
     }
+  )
+
+  if (suggestions === null) {
+    return 0
   }
 
-  return 0
+  let insertedCount = 0
+  const seenKeys = new Set<string>()
+  for (const suggestion of suggestions) {
+    const key = nicheKey(suggestion.label, suggestion.city)
+    if (existingKeys.has(key) || seenKeys.has(key)) {
+      continue
+    }
+    seenKeys.add(key)
+
+    await pool.query(
+      `INSERT INTO niches (label, city, status, source, reasoning)
+       VALUES ($1, $2, 'active', 'ai_suggested', $3)`,
+      [suggestion.label, suggestion.city, suggestion.reasoning]
+    )
+    insertedCount++
+  }
+
+  return insertedCount
 }

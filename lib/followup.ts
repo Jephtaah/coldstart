@@ -1,20 +1,19 @@
 import { pool } from './db'
 import { Resend } from 'resend'
-import { MAX_FOLLOWUPS_PER_DAY } from './constants'
+import { MAX_FOLLOWUPS_PER_DAY, RESEND_TIMEOUT_MS, FOLLOWUP_DELAY_INTERVAL } from './constants'
 import { toHtml, sendDelayMs, sleep } from './emailFormat'
+import { callDeepSeekJson, parseEmailResponse } from './ai'
 
-export async function sendFollowUps(maxFollowups: number): Promise<number> {
-  const apiKey = process.env.DEEPSEEK_API_KEY || process.env.AI_API_KEY
-  if (!apiKey) {
-    throw new Error('DEEPSEEK_API_KEY or AI_API_KEY is not set in environment variables.')
-  }
-
+export async function sendFollowUps(maxFollowups: number, isExhausted?: () => boolean): Promise<number> {
   const resendApiKey = process.env.RESEND_API_KEY
   if (!resendApiKey) {
     throw new Error('RESEND_API_KEY is not set in environment variables.')
   }
 
-  const senderDomain = process.env.SENDER_DOMAIN || 'example.com'
+  const senderDomain = process.env.SENDER_DOMAIN
+  if (!senderDomain) {
+    throw new Error('SENDER_DOMAIN is not set in environment variables.')
+  }
   const senderName = process.env.SENDER_NAME
   const fromEmail = senderName ? `${senderName} <outreach@${senderDomain}>` : `outreach@${senderDomain}`
   const resend = new Resend(resendApiKey)
@@ -48,10 +47,10 @@ export async function sendFollowUps(maxFollowups: number): Promise<number> {
   //    safely inside the function timeout so the loop can trickle follow-ups.
   const leadsResult = await pool.query(
     `SELECT id, business_name, email, generated_subject, generated_body, followup_subject, followup_body FROM leads 
-     WHERE status = 'sent' AND initial_sent_at <= NOW() - INTERVAL '7 days' AND followup_sent_at IS NULL 
+     WHERE status = 'sent' AND initial_sent_at <= NOW() - $2::interval AND followup_sent_at IS NULL 
        AND NOT EXISTS (SELECT 1 FROM suppressed_emails se WHERE se.email = lower(leads.email))
      LIMIT $1`,
-    [Math.min(maxFollowups, remaining)]
+    [Math.min(maxFollowups, remaining), FOLLOWUP_DELAY_INTERVAL]
   )
 
   const leads = leadsResult.rows
@@ -62,6 +61,8 @@ export async function sendFollowUps(maxFollowups: number): Promise<number> {
   let successfullySent = 0
 
   for (const lead of leads) {
+    if (isExhausted?.()) break
+
     if (!lead.email || lead.email.trim() === '') {
       await pool.query('UPDATE leads SET status = $1 WHERE id = $2', ['failed', lead.id])
       continue
@@ -106,53 +107,11 @@ Business Name: ${businessName}
 Previous Subject: ${lead.generated_subject || ''}
 `
 
-      async function generateFollowUpAI(): Promise<{ subject: string; body: string } | null> {
-        for (let attempt = 0; attempt < 2; attempt++) {
-          const controller = new AbortController()
-          const timeoutId = setTimeout(() => controller.abort(), 20000)
-          try {
-            const res = await fetch('https://api.deepseek.com/chat/completions', {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                Authorization: `Bearer ${apiKey}`,
-              },
-              body: JSON.stringify({
-                model: 'deepseek-v4-flash',
-                messages: [
-                  { role: 'system', content: systemPrompt },
-                  { role: 'user', content: `Generate the follow-up email for ${businessName}.` },
-                ],
-                temperature: 0.7,
-              }),
-              signal: controller.signal,
-            })
-            clearTimeout(timeoutId)
-
-            if (!res.ok) {
-              throw new Error(`DeepSeek API error: ${res.status} ${await res.text()}`)
-            }
-
-            const data = await res.json()
-            let content = data.choices?.[0]?.message?.content
-            if (!content) throw new Error('Empty response from DeepSeek API')
-
-            // Strip markdown code fences if present
-            content = content.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/\s*```$/, '').trim()
-
-            const parsed = JSON.parse(content)
-            if (typeof parsed.subject === 'string' && typeof parsed.body === 'string') {
-              return { subject: parsed.subject, body: parsed.body }
-            }
-          } catch {
-            clearTimeout(timeoutId)
-            // Retry on parse failure or network error
-          }
-        }
-        return null
-      }
-
-      const emailData = await generateFollowUpAI()
+      const emailData = await callDeepSeekJson(
+        systemPrompt,
+        `Generate the follow-up email for ${businessName}.`,
+        parseEmailResponse
+      )
 
       if (!emailData) {
         await pool.query('UPDATE leads SET status = $1 WHERE id = $2', ['failed', lead.id])
@@ -186,7 +145,7 @@ Previous Subject: ${lead.generated_subject || ''}
       )
 
       const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('Resend API timeout')), 10000)
+        setTimeout(() => reject(new Error('Resend API timeout')), RESEND_TIMEOUT_MS)
       )
 
       const emailResponse = (await Promise.race([emailPromise, timeoutPromise])) as Awaited<

@@ -18,32 +18,52 @@ jobs:
       - name: Discover new businesses
         env:
           APP_URL: ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
           # Discovery runs on its own endpoint so a Google Places quota outage
           # (or timeout) can never hold up scraping/generation/sending below.
+          # Fail the step on a network error (non-zero curl exit), a non-200
+          # HTTP status (401 auth, 500, etc.), or an endpoint-reported failure
+          # so the workflow surfaces it instead of silently passing.
           echo "--- discovery ---"
-          curl -fsS -X GET "$APP_URL/api/discover" || true
-          echo ""
+          RESPONSE=$(curl -sS -X GET -H "x-cron-secret: $CRON_SECRET" \
+            -w $'\nHTTP_STATUS:%{http_code}' \
+            "$APP_URL/api/discover") || exit 1
+          echo "$RESPONSE"
+          if ! echo "$RESPONSE" | grep -q 'HTTP_STATUS:200' || echo "$RESPONSE" | grep -q '"success":false'; then
+            echo "::error::Discovery did not return HTTP 200 + success. Check APP_URL/CRON_SECRET and the errors table."
+            exit 1
+          fi
 
       - name: Run pipeline until backlog drained
         env:
           APP_URL: ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
+          FAILED=0
           for i in $(seq 1 40); do
             echo "--- pipeline iteration $i ---"
-            RESPONSE=$(curl -fsS -X GET "$APP_URL/api/run-pipeline" || true)
-            if [ -z "$RESPONSE" ]; then
-              echo "No response, retrying..."
+            RESPONSE=$(curl -sS -X GET -H "x-cron-secret: $CRON_SECRET" \
+              -w $'\nHTTP_STATUS:%{http_code}' \
+              "$APP_URL/api/run-pipeline") || true
+            if [ -z "$RESPONSE" ] || ! echo "$RESPONSE" | grep -q 'HTTP_STATUS:200'; then
+              echo "::warning::Pipeline iteration $i did not return HTTP 200 (check APP_URL/CRON_SECRET)."
+              FAILED=1
               sleep 15
               continue
+            fi
+            if echo "$RESPONSE" | grep -q '"success":false'; then
+              echo "::error::Pipeline run reported a failure; check the errors table."
+              echo "$RESPONSE"
+              exit 1
             fi
             echo "$RESPONSE"
             if ! echo "$RESPONSE" | grep -q '"hasRemaining":true'; then
               echo "Pipeline finished."
-              exit 0
+              exit $FAILED
             fi
             echo "More work remaining, waiting 15s before next iteration..."
             sleep 15
           done
-          echo "Pipeline reached max iterations; run again to continue remaining work."
-          exit 0
+          echo "::error::Pipeline reached max iterations without finishing."
+          exit $FAILED

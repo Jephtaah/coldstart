@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { pool } from '@/lib/db'
 import { scrapeWebsite } from '@/lib/scraper'
 import { generateEmail } from '@/lib/generator'
+import { getAiApiKey } from '@/lib/ai'
 import { sendBatch } from '@/lib/sender'
 import { sendFollowUps } from '@/lib/followup'
 import { sourceNoWebsiteEmails } from '@/lib/emailfinder'
@@ -12,15 +13,17 @@ import {
   MAX_EMAIL_SEARCHES_PER_RUN,
   MAX_SENDS_PER_RUN,
   MAX_FOLLOWUPS_PER_RUN,
+  MAX_SCRAPES_PER_RUN,
+  MAX_GENERATES_PER_RUN,
+  RUN_BUDGET_MS,
+  FOLLOWUP_DELAY_INTERVAL,
   BOUNCE_ALERT_THRESHOLD,
   COMPLAINT_ALERT_THRESHOLD,
 } from '@/lib/constants'
-import { Resend } from 'resend'
+import { recordError } from '@/lib/errors'
+import { requireCronAuth } from '@/lib/cronAuth'
 
 export const dynamic = 'force-dynamic'
-
-const MAX_SCRAPES_PER_RUN = 12
-const MAX_GENERATES_PER_RUN = 8
 
 interface StageResult {
   success: boolean
@@ -34,6 +37,19 @@ interface StageResult {
 interface RemainingCap {
   initial: number
   followups: number
+}
+
+// A lead that throws while being processed would otherwise stay in its current
+// status and keep `hasRemaining` true forever, making the workflow loop spin
+// through its max iterations every day. Moving it to 'failed' (best effort)
+// takes it out of the work queues; failed leads are intentionally kept for
+// inspection on the dashboard.
+async function failLead(leadId: string): Promise<void> {
+  try {
+    await pool.query('UPDATE leads SET status = $1 WHERE id = $2', ['failed', leadId])
+  } catch (err: unknown) {
+    console.error(`Failed to mark lead ${leadId} as failed:`, err)
+  }
 }
 
 async function getRemainingCap(): Promise<RemainingCap> {
@@ -113,46 +129,47 @@ async function computeHasRemaining(
     `SELECT
        (SELECT COUNT(*) FROM leads WHERE status = 'new') AS to_scrape,
        (SELECT COUNT(*) FROM leads WHERE status = 'scraped') AS to_generate,
+       (SELECT COUNT(*) FROM leads WHERE status = 'no_website') AS to_source_email,
        (SELECT COUNT(*) FROM leads
         WHERE status = 'generated' AND (seo_score IS NULL OR seo_score < $1)
           AND NOT EXISTS (SELECT 1 FROM suppressed_emails se WHERE se.email = lower(leads.email))) AS to_send,
-       (SELECT COUNT(*) FROM leads
-        WHERE status = 'sent' AND initial_sent_at <= NOW() - INTERVAL '7 days' AND followup_sent_at IS NULL
+        (SELECT COUNT(*) FROM leads
+        WHERE status = 'sent' AND initial_sent_at <= NOW() - $2::interval AND followup_sent_at IS NULL
           AND NOT EXISTS (SELECT 1 FROM suppressed_emails se WHERE se.email = lower(leads.email))) AS to_followup`,
-    [MAX_SEO_SCORE_TO_SEND]
+    [MAX_SEO_SCORE_TO_SEND, FOLLOWUP_DELAY_INTERVAL]
   )
   const pending = pendingResult.rows[0]
   const hasSendWork = remaining > 0 && parseInt(pending.to_send, 10) > 0
   const hasFollowupWork = remainingFollowups > 0 && parseInt(pending.to_followup, 10) > 0
   const hasProduceWork =
     remaining > 0 &&
-    (parseInt(pending.to_scrape, 10) > 0 || parseInt(pending.to_generate, 10) > 0)
+    (parseInt(pending.to_scrape, 10) > 0 ||
+      parseInt(pending.to_generate, 10) > 0 ||
+      parseInt(pending.to_source_email, 10) > 0)
   return hasSendWork || hasFollowupWork || hasProduceWork
 }
 
-async function sendErrorAlert(results: Record<string, StageResult>): Promise<void> {
-  const failedStages = Object.entries(results).filter(([, res]) => !res.success || res.error)
-  if (failedStages.length === 0 || !process.env.RESEND_API_KEY || !process.env.REPLY_TO_EMAIL) {
-    return
-  }
-
-  try {
-    const resend = new Resend(process.env.RESEND_API_KEY)
-    const senderDomain = process.env.SENDER_DOMAIN || 'example.com'
-    const senderName = process.env.SENDER_NAME
-    const fromEmail = senderName ? `${senderName} <outreach@${senderDomain}>` : `outreach@${senderDomain}`
-    const errorSummary = failedStages
-      .map(([stage, res]) => `- ${stage}: ${res.error || 'Failed'}`)
-      .join('\n')
-
-    await resend.emails.send({
-      from: fromEmail,
-      to: process.env.REPLY_TO_EMAIL,
-      subject: '[ColdStart Alert] Pipeline Run Encountered Errors',
-      text: `The cold outreach pipeline ran on ${new Date().toISOString()} with errors in the following stages:\n\n${errorSummary}\n\nFull results:\n${JSON.stringify(results, null, 2)}`,
-    })
-  } catch (alertErr) {
-    console.error('Failed to send pipeline error alert email:', alertErr)
+// Persists every failed stage of a run to the errors table so the operator can
+// review them on the dashboard. Runs after a run completes, so all failures are
+// recorded even when a stage throws early.
+async function recordStageErrors(results: Record<string, StageResult>): Promise<void> {
+  for (const [stage, res] of Object.entries(results)) {
+    if (!res.success || res.error) {
+      const recorded = await recordError({
+        source: 'pipeline',
+        stage,
+        message: res.error || 'Stage failed without an error message',
+        context: {
+          processed: res.processed ?? null,
+          count: res.count ?? null,
+          bounces: res.bounces ?? null,
+          complaints: res.complaints ?? null,
+        },
+      })
+      if (!recorded) {
+        console.error(`Error persistence failed for pipeline/${stage}: ${res.error || 'unknown'}`)
+      }
+    }
   }
 }
 
@@ -162,10 +179,10 @@ async function getSendBacklog(): Promise<{ toSend: number; toFollowup: number }>
        (SELECT COUNT(*) FROM leads
         WHERE status = 'generated' AND (seo_score IS NULL OR seo_score < $1)
           AND NOT EXISTS (SELECT 1 FROM suppressed_emails se WHERE se.email = lower(leads.email))) AS to_send,
-       (SELECT COUNT(*) FROM leads
-        WHERE status = 'sent' AND initial_sent_at <= NOW() - INTERVAL '7 days' AND followup_sent_at IS NULL
+        (SELECT COUNT(*) FROM leads
+        WHERE status = 'sent' AND initial_sent_at <= NOW() - $2::interval AND followup_sent_at IS NULL
           AND NOT EXISTS (SELECT 1 FROM suppressed_emails se WHERE se.email = lower(leads.email))) AS to_followup`,
-    [MAX_SEO_SCORE_TO_SEND]
+    [MAX_SEO_SCORE_TO_SEND, FOLLOWUP_DELAY_INTERVAL]
   )
   return {
     toSend: parseInt(gateResult.rows[0].to_send, 10) || 0,
@@ -173,14 +190,43 @@ async function getSendBacklog(): Promise<{ toSend: number; toFollowup: number }>
   }
 }
 
-export async function GET() {
+// Removes generated leads whose address has since been suppressed (bounced or
+// complained via webhook). The send query already excludes them, so without this
+// they would linger in 'generated' forever — invisible in the backlog and never
+// cleaned up. Suppressed addresses are preserved in suppressed_emails, so the
+// row deletion is safe.
+async function cleanupSuppressedGenerated(): Promise<number> {
+  const result = await pool.query(
+    `DELETE FROM leads
+     WHERE status = 'generated'
+       AND EXISTS (SELECT 1 FROM suppressed_emails se WHERE se.email = lower(leads.email))
+     RETURNING id`
+  )
+  return result.rowCount ?? 0
+}
+
+// True once the invocation has spent its soft wall-clock budget. Stages use this
+// to stop starting new units of work (individual scrapes, generations, etc.) so
+// the function returns well inside Vercel's serverless timeout on the Hobby
+// plan. The workflow loop then calls back and picks up the rest.
+function budgetExhausted(startedAt: number): boolean {
+  return Date.now() - startedAt >= RUN_BUDGET_MS
+}
+
+export async function GET(request: Request) {
+  const authError = requireCronAuth(request)
+  if (authError) return authError
+
+  const startedAt = Date.now()
   const results: Record<string, StageResult> = {}
 
   // Compute today's remaining send budgets. Initial sends are limited by the
   // daily capacity cap; follow-ups have their own separate budget. If both are
-  // spent, skip the run so the pipeline waits for the next day.
-  let remaining = Number.MAX_SAFE_INTEGER
-  let remainingFollowups = Number.MAX_SAFE_INTEGER
+  // spent, skip the run so the pipeline waits for the next day. A failure here
+  // must fail the run rather than proceed with unlimited budgets, which could
+  // otherwise let a single day blow through the entire send capacity.
+  let remaining = 0
+  let remainingFollowups = 0
   try {
     const cap = await getRemainingCap()
     remaining = cap.initial
@@ -188,6 +234,8 @@ export async function GET() {
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err)
     results.cap = { success: false, error: message }
+    await recordStageErrors(results)
+    return NextResponse.json({ success: false, error: message }, { status: 500 })
   }
 
   if (remaining <= 0 && remainingFollowups <= 0) {
@@ -217,19 +265,31 @@ export async function GET() {
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err)
     results.gate = { success: false, error: message }
-    await sendErrorAlert(results)
+    await recordStageErrors(results)
     return NextResponse.json({ success: false, error: message }, { status: 500 })
   }
 
   const canSendInitial = remaining > 0 && toSend > 0
   const canSendFollowups = remainingFollowups > 0 && toFollowup > 0
 
+  // Always purge generated leads whose email is suppressed, so they don't
+  // accumulate invisibly regardless of which mode this invocation takes.
+  try {
+    const purged = await cleanupSuppressedGenerated()
+    if (purged > 0) {
+      results.cleanup = { success: true, processed: purged }
+    }
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err)
+    results.cleanup = { success: false, error: message }
+  }
+
   if (canSendInitial || canSendFollowups) {
     // Send mode: trickle out the backlog, never producing while a drain is
     // underway so each invocation stays safely inside the function timeout.
     if (canSendInitial) {
       try {
-        const sentCount = await sendBatch(MAX_SENDS_PER_RUN)
+        const sentCount = await sendBatch(MAX_SENDS_PER_RUN, () => budgetExhausted(startedAt))
         results.sending = { success: true, processed: sentCount }
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err)
@@ -239,7 +299,10 @@ export async function GET() {
 
     if (canSendFollowups) {
       try {
-        const followupCount = await sendFollowUps(MAX_FOLLOWUPS_PER_RUN)
+        const followupCount = await sendFollowUps(
+          MAX_FOLLOWUPS_PER_RUN,
+          () => budgetExhausted(startedAt)
+        )
         results.followups = { success: true, processed: followupCount }
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err)
@@ -258,7 +321,7 @@ export async function GET() {
       results.settings = { success: false, error: message }
     }
 
-    await sendErrorAlert(results)
+    await recordStageErrors(results)
 
     return NextResponse.json(
       { success: true, sendMode: true, hasRemaining, results },
@@ -270,98 +333,117 @@ export async function GET() {
   // sending happens here — newly generated leads are picked up by the send gate
   // on a later invocation. Discovery of new businesses is a separate concern
   // handled by /api/discover, so this route never depends on Google Places.
-  // Stage 1: Scraping
-  try {
-    const leadsResult = await pool.query(
-      'SELECT id FROM leads WHERE status = $1 ORDER BY seo_score ASC NULLS LAST LIMIT $2',
-      ['new', MAX_SCRAPES_PER_RUN]
-    )
-    let scrapedCount = 0
-    const errors: string[] = []
+  // Refilling only runs while there is still initial-send capacity left today;
+  // otherwise it would build a backlog that can't go out until the cap resets
+  // and then report "no work remains" in the same run.
+  if (remaining > 0) {
+    // Stage 1: Scraping
+    try {
+      const leadsResult = await pool.query(
+        'SELECT id FROM leads WHERE status = $1 ORDER BY seo_score ASC NULLS LAST LIMIT $2',
+        ['new', MAX_SCRAPES_PER_RUN]
+      )
+      let scrapedCount = 0
+      const errors: string[] = []
 
-    for (const lead of leadsResult.rows) {
-      try {
-        const success = await scrapeWebsite(lead.id)
-        if (success) scrapedCount++
-      } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err)
-        errors.push(`Lead ${lead.id}: ${message}`)
+      for (const lead of leadsResult.rows) {
+        if (budgetExhausted(startedAt)) break
+        try {
+          const success = await scrapeWebsite(lead.id)
+          if (success) scrapedCount++
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err)
+          errors.push(`Lead ${lead.id}: ${message}`)
+          await failLead(lead.id)
+        }
       }
-    }
 
-    results.scraping = {
-      success: errors.length === 0,
-      processed: scrapedCount,
-      ...(errors.length > 0 && { error: errors.join('; ') }),
-    }
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err)
-    results.scraping = { success: false, error: message }
-  }
-
-  // Stage 2: Source emails for no-website leads via web search. Leads that get
-  // an email move to 'scraped' and flow into generation; leads with no findable
-  // email are deleted so the database stays lean.
-  try {
-    const { sourced, deleted } = await sourceNoWebsiteEmails(MAX_EMAIL_SEARCHES_PER_RUN)
-    results.emailSourcing = {
-      success: true,
-      processed: sourced,
-      ...(deleted > 0 && { deleted }),
-    }
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err)
-    results.emailSourcing = { success: false, error: message }
-  }
-
-  // Stage 3: Generation. Leads scoring at/above the SEO cutoff are deleted
-  // (and suppressed) rather than stored as 'skipped' — nothing useless is kept.
-  try {
-    const highScoreResult = await pool.query(
-      `SELECT id, place_id FROM leads WHERE status = ANY($1::text[]) AND seo_score >= $2`,
-      [['scraped', 'generated'], MAX_SEO_SCORE_TO_SEND]
-    )
-    let deletedHighScoreCount = 0
-    for (const row of highScoreResult.rows) {
-      if (row.place_id) {
-        await pool.query(
-          `INSERT INTO suppressed_places (place_id) VALUES ($1) ON CONFLICT (place_id) DO NOTHING`,
-          [row.place_id]
-        )
+      results.scraping = {
+        success: errors.length === 0,
+        processed: scrapedCount,
+        ...(errors.length > 0 && { error: errors.join('; ') }),
       }
-      await pool.query('DELETE FROM leads WHERE id = $1', [row.id])
-      deletedHighScoreCount++
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err)
+      results.scraping = { success: false, error: message }
     }
 
-    const leadsResult = await pool.query(
-      `SELECT l.id FROM leads l
-       WHERE l.status = $1
-         AND NOT EXISTS (SELECT 1 FROM suppressed_emails se WHERE se.email = lower(l.email))
-       ORDER BY l.seo_score ASC NULLS LAST LIMIT $2`,
-      ['scraped', MAX_GENERATES_PER_RUN]
-    )
-    let generatedCount = 0
-    const errors: string[] = []
-
-    for (const lead of leadsResult.rows) {
-      try {
-        const success = await generateEmail(lead.id)
-        if (success) generatedCount++
-      } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err)
-        errors.push(`Lead ${lead.id}: ${message}`)
+    // Stage 2: Source emails for no-website leads via web search. Leads that get
+    // an email move to 'scraped' and flow into generation; leads with no findable
+    // email are deleted so the database stays lean.
+    try {
+      const { sourced, deleted } = await sourceNoWebsiteEmails(
+        MAX_EMAIL_SEARCHES_PER_RUN,
+        () => budgetExhausted(startedAt)
+      )
+      results.emailSourcing = {
+        success: true,
+        processed: sourced,
+        ...(deleted > 0 && { deleted }),
       }
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err)
+      results.emailSourcing = { success: false, error: message }
     }
 
-    results.generation = {
-      success: errors.length === 0,
-      processed: generatedCount,
-      ...(deletedHighScoreCount > 0 && { deleted: deletedHighScoreCount }),
-      ...(errors.length > 0 && { error: errors.join('; ') }),
+    // Stage 3: Generation. Leads scoring at/above the SEO cutoff are deleted
+    // (and suppressed) rather than stored as 'skipped' — nothing useless is kept.
+    try {
+      const highScoreResult = await pool.query(
+        `SELECT id, place_id FROM leads WHERE status = ANY($1::text[]) AND seo_score >= $2`,
+        [['scraped', 'generated'], MAX_SEO_SCORE_TO_SEND]
+      )
+      let deletedHighScoreCount = 0
+      for (const row of highScoreResult.rows) {
+        if (row.place_id) {
+          await pool.query(
+            `INSERT INTO suppressed_places (place_id) VALUES ($1) ON CONFLICT (place_id) DO NOTHING`,
+            [row.place_id]
+          )
+        }
+        await pool.query('DELETE FROM leads WHERE id = $1', [row.id])
+        deletedHighScoreCount++
+      }
+
+      const leadsResult = await pool.query(
+        `SELECT l.id FROM leads l
+         WHERE l.status = $1
+           AND NOT EXISTS (SELECT 1 FROM suppressed_emails se WHERE se.email = lower(l.email))
+         ORDER BY l.seo_score ASC NULLS LAST LIMIT $2`,
+        ['scraped', MAX_GENERATES_PER_RUN]
+      )
+      let generatedCount = 0
+      const errors: string[] = []
+
+      if (!getAiApiKey()) {
+        // A missing key is a config error, not a lead problem: surface it once
+        // and leave the scraped leads queued. Failing them all here would
+        // permanently destroy the queue for no fault of the leads.
+        errors.push('DEEPSEEK_API_KEY or AI_API_KEY is not set in environment variables.')
+      } else {
+      for (const lead of leadsResult.rows) {
+        if (budgetExhausted(startedAt)) break
+        try {
+          const success = await generateEmail(lead.id)
+          if (success) generatedCount++
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err)
+          errors.push(`Lead ${lead.id}: ${message}`)
+          await failLead(lead.id)
+        }
+      }
+      }
+
+      results.generation = {
+        success: errors.length === 0,
+        processed: generatedCount,
+        ...(deletedHighScoreCount > 0 && { deleted: deletedHighScoreCount }),
+        ...(errors.length > 0 && { error: errors.join('; ') }),
+      }
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err)
+      results.generation = { success: false, error: message }
     }
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err)
-    results.generation = { success: false, error: message }
   }
 
   results.sendHealth = await runSendHealthMonitor()
@@ -375,7 +457,7 @@ export async function GET() {
     results.settings = { success: false, error: message }
   }
 
-  await sendErrorAlert(results)
+  await recordStageErrors(results)
 
   return NextResponse.json({ success: true, hasRemaining, results }, { status: 200 })
 }

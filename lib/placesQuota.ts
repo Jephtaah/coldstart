@@ -6,7 +6,7 @@ import { MAX_PLACES_CALLS_PER_DAY } from './constants'
 // database server's current date, matching how the daily send cap is counted)
 // and rolled over automatically when the date changes.
 //
-// Requires the settings columns added by docs/sql/add-places-budget.sql.
+// Requires `places_used_date` and `places_used_count` columns on the settings row.
 
 export async function getPlacesQuotaRemaining(): Promise<number> {
   try {
@@ -25,7 +25,7 @@ export async function getPlacesQuotaRemaining(): Promise<number> {
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err)
     throw new Error(
-      `Google Places quota is unavailable (run docs/sql/add-places-budget.sql first): ${message}`
+      `Google Places quota is unavailable: ${message}`
     )
   }
 }
