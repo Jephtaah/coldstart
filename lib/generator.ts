@@ -74,10 +74,12 @@ ${scrapedContent}
     parseEmailResponse
   )
 
-  if (!emailData) {
-    await pool.query('UPDATE leads SET status = $1 WHERE id = $2', ['failed', leadId])
-    return false
-  }
+  // callDeepSeekJson throws AiUnavailableError when the provider fails after
+  // its retries. We deliberately do NOT mark the lead failed here: a transient
+  // AI outage is not the lead's fault, and permanently failing a valid lead
+  // over it loses the outreach target. The caller leaves it queued ('scraped')
+  // so a later run retries generation, and records the failure in the errors
+  // table.
 
   await pool.query(
     `UPDATE leads SET generated_subject = $1, generated_body = $2, status = 'generated' WHERE id = $3`,

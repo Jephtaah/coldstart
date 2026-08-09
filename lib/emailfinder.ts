@@ -75,7 +75,32 @@ async function fetchHtml(url: string, timeoutMs: number): Promise<string> {
 }
 
 async function searchResultUrls(query: string): Promise<{ urls: string[]; snippetEmails: string[] }> {
-  const html = await fetchHtml(`${DDG_HTML_URL}?q=${encodeURIComponent(query)}`, SEARCH_TIMEOUT_MS)
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), SEARCH_TIMEOUT_MS)
+
+  let res: Response
+  try {
+    res = await fetch(`${DDG_HTML_URL}?q=${encodeURIComponent(query)}`, {
+      signal: controller.signal,
+      headers: { 'User-Agent': USER_AGENT },
+    })
+  } finally {
+    clearTimeout(timeoutId)
+  }
+
+  // DuckDuckGo answers a rate limit with HTTP 202 (and sometimes 403) plus an
+  // "unusual traffic" page. That is NOT "no results": treating it as a clean
+  // empty search would delete the lead and permanently suppress its place.
+  // Throw instead so the caller keeps the lead queued for a later retry.
+  if (!res.ok || res.status === 202 || res.status === 403) {
+    throw new Error(`DuckDuckGo search failed with status ${res.status}`)
+  }
+
+  const html = await res.text()
+  if (/unusual traffic|anomaly/i.test(html)) {
+    throw new Error('DuckDuckGo served an anomaly/rate-limit page')
+  }
+
   const $ = cheerio.load(html)
 
   const urls: string[] = []
@@ -130,7 +155,7 @@ async function findEmailForBusiness(businessName: string, city: string): Promise
 export async function sourceNoWebsiteEmails(
   max: number,
   isExhausted?: () => boolean
-): Promise<{ sourced: number; deleted: number }> {
+): Promise<{ sourced: number; deleted: number; failures: string[] }> {
   const result = await pool.query(
     `SELECT l.id, l.business_name, l.address, l.place_id, n.city
      FROM leads l JOIN niches n ON n.id = l.niche_id
@@ -142,6 +167,7 @@ export async function sourceNoWebsiteEmails(
 
   let sourced = 0
   let deleted = 0
+  const failures: string[] = []
 
   for (const lead of result.rows as NoWebsiteLead[]) {
     if (isExhausted?.()) break
@@ -159,7 +185,11 @@ export async function sourceNoWebsiteEmails(
         email = null
       }
     } catch (err) {
-      console.error(`Email search failed for lead ${lead.id} (${businessName}):`, err)
+      const message = err instanceof Error ? err.message : String(err)
+      console.error(`Email search failed for lead ${lead.id} (${businessName}):`, message)
+      // Surface the failure so a DuckDuckGo outage (or rate limit) is visible
+      // on the dashboard instead of silently retrying every day.
+      failures.push(`Lead ${lead.id} (${businessName}): ${message}`)
       searchFailed = true
     }
 
@@ -195,5 +225,5 @@ export async function sourceNoWebsiteEmails(
     await sleep(REQUEST_DELAY_MS)
   }
 
-  return { sourced, deleted }
+  return { sourced, deleted, failures }
 }
