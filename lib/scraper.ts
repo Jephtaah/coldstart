@@ -197,7 +197,9 @@ export async function scrapeWebsite(leadId: string): Promise<boolean> {
       [scrapedContent, bestEmail, mergedScore, combinedFlags, leadId]
     )
     return true
-  } catch {
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    console.error(`Scrape failed for lead ${leadId} (${website}):`, message)
     if (existingEmail) {
       const fallbackContent = `Business Name: ${businessName}\nAddress: ${address}\nWebsite: ${website} (Scrape failed, email retained)`
       await pool.query(

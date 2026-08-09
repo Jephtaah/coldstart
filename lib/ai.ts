@@ -18,18 +18,29 @@ export function getAiApiKey(): string | null {
   return process.env.DEEPSEEK_API_KEY || process.env.AI_API_KEY || null
 }
 
-// Calls DeepSeek with the given prompts and returns the parsed result, or null
-// when every attempt failed. Throws only when the API key is missing (a
-// configuration error the operator must fix), so callers can tell the two apart.
+// Thrown when the AI provider is unreachable, rate-limited, or misconfigured
+// (e.g. an invalid key). This is a systemic problem, not a fault of the lead
+// being processed: callers should surface it (record it, fail the run) and
+// leave work queued for a retry instead of permanently failing leads.
+export class AiUnavailableError extends Error {}
+
+// Calls DeepSeek with the given prompts and returns the parsed result. Throws:
+// - a plain Error when the API key is missing (config the operator must fix), or
+// - AiUnavailableError immediately for 401/403 (key/billing config), and after
+//   all retries are exhausted for network errors, timeouts, and responses that
+//   don't parse or don't match the expected shape.
+// Callers never see a silent `null` that would be mistaken for "no result".
 export async function callDeepSeekJson<T>(
   systemPrompt: string,
   userMessage: string,
   parse: (value: unknown) => T | null
-): Promise<T | null> {
+): Promise<T> {
   const apiKey = getAiApiKey()
   if (!apiKey) {
     throw new Error('DEEPSEEK_API_KEY or AI_API_KEY is not set in environment variables.')
   }
+
+  let lastError = `No usable response after ${MAX_AI_ATTEMPTS} attempts`
 
   for (let attempt = 0; attempt < MAX_AI_ATTEMPTS; attempt++) {
     const controller = new AbortController()
@@ -52,6 +63,14 @@ export async function callDeepSeekJson<T>(
         signal: controller.signal,
       })
 
+      // 401/403 are config problems (invalid key, billing/access) that won't
+      // self-resolve on retry. Fail fast so the operator is alerted instead of
+      // every lead silently failing after two identical attempts.
+      if (res.status === 401 || res.status === 403) {
+        throw new AiUnavailableError(
+          `DeepSeek API auth/config error (${res.status}): ${await res.text()}`
+        )
+      }
       if (!res.ok) {
         throw new Error(`DeepSeek API error: ${res.status} ${await res.text()}`)
       }
@@ -70,14 +89,18 @@ export async function callDeepSeekJson<T>(
       const parsed = JSON.parse(content)
       const result = parse(parsed)
       if (result !== null) return result
-    } catch {
+      lastError = 'Response did not match the expected format'
+    } catch (err) {
+      // Config errors are not retried.
+      if (err instanceof AiUnavailableError) throw err
       // Network error, timeout, or unparseable/mismatched response — retry.
+      lastError = err instanceof Error ? err.message : String(err)
     } finally {
       clearTimeout(timeoutId)
     }
   }
 
-  return null
+  throw new AiUnavailableError(lastError)
 }
 
 export interface AiEmailContent {

@@ -1,5 +1,5 @@
 import { pool } from './db'
-import { callDeepSeekJson } from './ai'
+import { callDeepSeekJson, AiUnavailableError } from './ai'
 
 interface NicheRow {
   label: string
@@ -50,29 +50,37 @@ Return STRICT JSON as an array of objects with this exact structure, with no oth
 ]
 `
 
-  const suggestions = await callDeepSeekJson<NicheSuggestion[]>(
-    systemPrompt,
-    'Suggest new niche and city combinations.',
-    (value) => {
-      if (!Array.isArray(value)) return null
-      const items: NicheSuggestion[] = []
-      for (const item of value) {
-        if (typeof item !== 'object' || item === null) continue
-        const obj = item as Record<string, unknown>
-        if (typeof obj.label !== 'string' || typeof obj.city !== 'string' || typeof obj.reasoning !== 'string') {
-          continue
+  let suggestions: NicheSuggestion[] = []
+  try {
+    suggestions = await callDeepSeekJson<NicheSuggestion[]>(
+      systemPrompt,
+      'Suggest new niche and city combinations.',
+      (value) => {
+        if (!Array.isArray(value)) return null
+        const items: NicheSuggestion[] = []
+        for (const item of value) {
+          if (typeof item !== 'object' || item === null) continue
+          const obj = item as Record<string, unknown>
+          if (typeof obj.label !== 'string' || typeof obj.city !== 'string' || typeof obj.reasoning !== 'string') {
+            continue
+          }
+          const label = obj.label.trim()
+          const city = obj.city.trim()
+          if (label === '' || city === '') continue
+          items.push({ label, city, reasoning: obj.reasoning.trim() })
         }
-        const label = obj.label.trim()
-        const city = obj.city.trim()
-        if (label === '' || city === '') continue
-        items.push({ label, city, reasoning: obj.reasoning.trim() })
+        return items.length > 0 ? items : null
       }
-      return items.length > 0 ? items : null
+    )
+  } catch (err) {
+    // AI failures (network, rate limit, or config) are swallowed here on
+    // purpose: the discovery route reports "no new niches produced" when
+    // expandNiches returns 0, so the operator still sees the stall. Any other
+    // error propagates to the caller.
+    if (err instanceof AiUnavailableError) {
+      return 0
     }
-  )
-
-  if (suggestions === null) {
-    return 0
+    throw err
   }
 
   let insertedCount = 0

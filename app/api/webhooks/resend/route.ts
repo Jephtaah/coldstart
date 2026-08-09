@@ -152,7 +152,11 @@ export async function POST(request: Request) {
 
     return NextResponse.json({ success: true }, { status: 200 })
   } catch (error: unknown) {
+    // Do NOT swallow this: a bounce/complaint that fails to persist means the
+    // address is never suppressed and gets re-emailed, hurting deliverability.
+    // Returning 500 lets Resend retry the event with backoff; the handler is
+    // idempotent so a retry is safe.
     console.error('Resend webhook error:', error)
-    return NextResponse.json({ success: true }, { status: 200 })
+    return NextResponse.json({ success: false, error: 'webhook processing failed' }, { status: 500 })
   }
 }

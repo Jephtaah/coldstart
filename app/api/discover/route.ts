@@ -114,9 +114,20 @@ export async function GET(request: Request) {
       }
 
       // A run stopped by a transient pagination error is partial: it neither
-      // proves the niche is dry nor exhausts it.
+      // proves the niche is dry nor exhausts it. Record it so a persistent
+      // Google Places outage shows up on the dashboard instead of silently
+      // discovering nothing every day.
       if (result.status === 'partial') {
+        const partialMsg = `Niche ${niche.label} in ${niche.city} stopped early on a transient Places fetch error; will retry next run.`
         partial.push(`${niche.label} in ${niche.city}`)
+        const recorded = await recordError({
+          source: 'discover',
+          stage: 'discovery',
+          message: partialMsg,
+        })
+        if (!recorded) {
+          console.error(`Error persistence failed for discover/discovery: ${partialMsg}`)
+        }
         continue
       }
 

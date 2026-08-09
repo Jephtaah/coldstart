@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server'
 import { pool } from '@/lib/db'
 import { scrapeWebsite } from '@/lib/scraper'
 import { generateEmail } from '@/lib/generator'
-import { getAiApiKey } from '@/lib/ai'
+import { getAiApiKey, AiUnavailableError } from '@/lib/ai'
 import { sendBatch } from '@/lib/sender'
 import { sendFollowUps } from '@/lib/followup'
 import { sourceNoWebsiteEmails } from '@/lib/emailfinder'
@@ -289,8 +289,14 @@ export async function GET(request: Request) {
     // underway so each invocation stays safely inside the function timeout.
     if (canSendInitial) {
       try {
-        const sentCount = await sendBatch(MAX_SENDS_PER_RUN, () => budgetExhausted(startedAt))
-        results.sending = { success: true, processed: sentCount }
+        const { sent, rejected } = await sendBatch(MAX_SENDS_PER_RUN, () =>
+          budgetExhausted(startedAt)
+        )
+        results.sending = {
+          success: rejected.length === 0,
+          processed: sent,
+          ...(rejected.length > 0 && { error: rejected.join('; ') }),
+        }
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err)
         results.sending = { success: false, error: message }
@@ -299,11 +305,14 @@ export async function GET(request: Request) {
 
     if (canSendFollowups) {
       try {
-        const followupCount = await sendFollowUps(
-          MAX_FOLLOWUPS_PER_RUN,
-          () => budgetExhausted(startedAt)
+        const { sent, rejected } = await sendFollowUps(MAX_FOLLOWUPS_PER_RUN, () =>
+          budgetExhausted(startedAt)
         )
-        results.followups = { success: true, processed: followupCount }
+        results.followups = {
+          success: rejected.length === 0,
+          processed: sent,
+          ...(rejected.length > 0 && { error: rejected.join('; ') }),
+        }
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err)
         results.followups = { success: false, error: message }
@@ -318,7 +327,7 @@ export async function GET(request: Request) {
       hasRemaining = await computeHasRemaining(remaining, remainingFollowups)
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err)
-      results.settings = { success: false, error: message }
+      results.hasRemaining = { success: false, error: message }
     }
 
     await recordStageErrors(results)
@@ -372,14 +381,15 @@ export async function GET(request: Request) {
     // an email move to 'scraped' and flow into generation; leads with no findable
     // email are deleted so the database stays lean.
     try {
-      const { sourced, deleted } = await sourceNoWebsiteEmails(
+      const { sourced, deleted, failures } = await sourceNoWebsiteEmails(
         MAX_EMAIL_SEARCHES_PER_RUN,
         () => budgetExhausted(startedAt)
       )
       results.emailSourcing = {
-        success: true,
+        success: failures.length === 0,
         processed: sourced,
         ...(deleted > 0 && { deleted }),
+        ...(failures.length > 0 && { error: failures.join('; ') }),
       }
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err)
@@ -429,7 +439,13 @@ export async function GET(request: Request) {
         } catch (err: unknown) {
           const message = err instanceof Error ? err.message : String(err)
           errors.push(`Lead ${lead.id}: ${message}`)
-          await failLead(lead.id)
+          // An AI provider failure is not the lead's fault: keep it queued so a
+          // later run retries generation instead of permanently losing a valid
+          // outreach target. Other failures (e.g. DB errors) fail the lead so
+          // it leaves the work queue.
+          if (!(err instanceof AiUnavailableError)) {
+            await failLead(lead.id)
+          }
         }
       }
       }
@@ -454,7 +470,7 @@ export async function GET(request: Request) {
     hasRemaining = await computeHasRemaining(remaining, remainingFollowups)
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err)
-    results.settings = { success: false, error: message }
+    results.hasRemaining = { success: false, error: message }
   }
 
   await recordStageErrors(results)

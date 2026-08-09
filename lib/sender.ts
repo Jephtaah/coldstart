@@ -3,7 +3,19 @@ import { Resend } from 'resend'
 import { MAX_SEO_SCORE_TO_SEND, MAX_INITIAL_SENDS_PER_DAY, RESEND_TIMEOUT_MS } from './constants'
 import { toHtml, sendDelayMs, sleep } from './emailFormat'
 
-export async function sendBatch(maxSends: number, isExhausted?: () => boolean): Promise<number> {
+export interface SendBatchResult {
+  sent: number
+  // Human-readable descriptions of every lead that failed to send, so callers
+  // can surface the failures (e.g. a misconfigured sender domain rejects every
+  // attempt) in the errors table and the cron run instead of silently losing
+  // them to console.error.
+  rejected: string[]
+}
+
+export async function sendBatch(
+  maxSends: number,
+  isExhausted?: () => boolean
+): Promise<SendBatchResult> {
   const apiKey = process.env.RESEND_API_KEY
   if (!apiKey) {
     throw new Error('RESEND_API_KEY is not set in environment variables.')
@@ -28,7 +40,7 @@ export async function sendBatch(maxSends: number, isExhausted?: () => boolean): 
 
   const settings = settingsResult.rows[0]
   if (settings.paused) {
-    return 0
+    return { sent: 0, rejected: [] }
   }
 
   const dailyCap = settings.daily_cap
@@ -46,7 +58,7 @@ export async function sendBatch(maxSends: number, isExhausted?: () => boolean): 
   )
 
   if (remaining <= 0) {
-    return 0
+    return { sent: 0, rejected: [] }
   }
 
   // 3. Fetch up to 'maxSends' leads with status = 'generated', weakest SEO first,
@@ -64,15 +76,17 @@ export async function sendBatch(maxSends: number, isExhausted?: () => boolean): 
 
   const leads = leadsResult.rows
   if (leads.length === 0) {
-    return 0
+    return { sent: 0, rejected: [] }
   }
 
   let successfullySent = 0
+  const rejected: string[] = []
 
   for (const lead of leads) {
     if (isExhausted?.()) break
 
     if (!lead.email || !lead.generated_subject || !lead.generated_body) {
+      rejected.push(`Lead ${lead.id}: missing email or generated content`)
       await pool.query('UPDATE leads SET status = $1 WHERE id = $2', ['failed', lead.id])
       continue
     }
@@ -101,10 +115,8 @@ export async function sendBatch(maxSends: number, isExhausted?: () => boolean): 
       >
 
       if (emailResponse.error || !emailResponse.data?.id) {
-        console.error(
-          `Resend rejected email for lead ${lead.id} (${lead.email}): ${
-            emailResponse.error?.message || 'no email id returned'
-          }`
+        rejected.push(
+          `Lead ${lead.id} (${lead.email}): ${emailResponse.error?.message || 'no email id returned'}`
         )
         await pool.query('UPDATE leads SET status = $1 WHERE id = $2', ['failed', lead.id])
         continue
@@ -118,10 +130,13 @@ export async function sendBatch(maxSends: number, isExhausted?: () => boolean): 
       )
 
       successfullySent++
-    } catch {
+    } catch (err) {
+      rejected.push(
+        `Lead ${lead.id} (${lead.email}): ${err instanceof Error ? err.message : String(err)}`
+      )
       await pool.query('UPDATE leads SET status = $1 WHERE id = $2', ['failed', lead.id])
     }
   }
 
-  return successfullySent
+  return { sent: successfullySent, rejected }
 }

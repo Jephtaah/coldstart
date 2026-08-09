@@ -2,12 +2,27 @@ import { pool } from './db'
 import { Resend } from 'resend'
 import { MAX_FOLLOWUPS_PER_DAY, RESEND_TIMEOUT_MS, FOLLOWUP_DELAY_INTERVAL } from './constants'
 import { toHtml, sendDelayMs, sleep } from './emailFormat'
-import { callDeepSeekJson, parseEmailResponse } from './ai'
+import { callDeepSeekJson, parseEmailResponse, getAiApiKey } from './ai'
 
-export async function sendFollowUps(maxFollowups: number, isExhausted?: () => boolean): Promise<number> {
+export interface SendFollowUpsResult {
+  sent: number
+  // Human-readable descriptions of every lead whose follow-up could not be
+  // sent (AI generation failure or Resend rejection), so callers can surface
+  // them in the errors table and the cron run instead of silently losing them.
+  rejected: string[]
+}
+
+export async function sendFollowUps(
+  maxFollowups: number,
+  isExhausted?: () => boolean
+): Promise<SendFollowUpsResult> {
   const resendApiKey = process.env.RESEND_API_KEY
   if (!resendApiKey) {
     throw new Error('RESEND_API_KEY is not set in environment variables.')
+  }
+
+  if (!getAiApiKey()) {
+    throw new Error('DEEPSEEK_API_KEY or AI_API_KEY is not set in environment variables.')
   }
 
   const senderDomain = process.env.SENDER_DOMAIN
@@ -26,7 +41,7 @@ export async function sendFollowUps(maxFollowups: number, isExhausted?: () => bo
 
   const settings = settingsResult.rows[0]
   if (settings.paused) {
-    return 0
+    return { sent: 0, rejected: [] }
   }
 
   // 2. Count today's follow-up sends (UTC date). Follow-ups have their own
@@ -38,7 +53,7 @@ export async function sendFollowUps(maxFollowups: number, isExhausted?: () => bo
   const remaining = MAX_FOLLOWUPS_PER_DAY - sentTodayCount
 
   if (remaining <= 0) {
-    return 0
+    return { sent: 0, rejected: [] }
   }
 
   // 3. Find eligible leads: status = 'sent', initial_sent_at > 7 days ago,
@@ -55,15 +70,17 @@ export async function sendFollowUps(maxFollowups: number, isExhausted?: () => bo
 
   const leads = leadsResult.rows
   if (leads.length === 0) {
-    return 0
+    return { sent: 0, rejected: [] }
   }
 
   let successfullySent = 0
+  const rejected: string[] = []
 
   for (const lead of leads) {
     if (isExhausted?.()) break
 
     if (!lead.email || lead.email.trim() === '') {
+      rejected.push(`Lead ${lead.id}: missing email`)
       await pool.query('UPDATE leads SET status = $1 WHERE id = $2', ['failed', lead.id])
       continue
     }
@@ -89,7 +106,8 @@ export async function sendFollowUps(maxFollowups: number, isExhausted?: () => bo
       subject = persistedSubject
       body = persistedBody
     } else {
-      const systemPrompt = `You are an independent freelance web developer writing a quick follow-up email to a local business owner.
+      try {
+        const systemPrompt = `You are an independent freelance web developer writing a quick follow-up email to a local business owner.
 Strict Rules:
 1. NO em dashes anywhere in the output.
 2. NO corporate filler phrases ("I hope this finds you well", "reaching out", "circle back", etc.).
@@ -107,26 +125,32 @@ Business Name: ${businessName}
 Previous Subject: ${lead.generated_subject || ''}
 `
 
-      const emailData = await callDeepSeekJson(
-        systemPrompt,
-        `Generate the follow-up email for ${businessName}.`,
-        parseEmailResponse
-      )
+        const emailData = await callDeepSeekJson(
+          systemPrompt,
+          `Generate the follow-up email for ${businessName}.`,
+          parseEmailResponse
+        )
 
-      if (!emailData) {
-        await pool.query('UPDATE leads SET status = $1 WHERE id = $2', ['failed', lead.id])
+        subject = emailData.subject
+        body = emailData.body
+
+        // Persist before sending so a crash between Resend accepting the email
+        // and the sent-at UPDATE can't lose the exact content that was delivered.
+        await pool.query(
+          'UPDATE leads SET followup_subject = $1, followup_body = $2 WHERE id = $3',
+          [subject, body, lead.id]
+        )
+      } catch (err) {
+        // AI failure (network, rate limit, or config) is not the lead's fault:
+        // leave it in 'sent' so a later run retries the follow-up, and surface
+        // the failure for the operator instead of failing it silently.
+        rejected.push(
+          `Lead ${lead.id} (${businessName}): follow-up generation failed: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        )
         continue
       }
-
-      subject = emailData.subject
-      body = emailData.body
-
-      // Persist before sending so a crash between Resend accepting the email
-      // and the sent-at UPDATE can't lose the exact content that was delivered.
-      await pool.query(
-        'UPDATE leads SET followup_subject = $1, followup_body = $2 WHERE id = $3',
-        [subject, body, lead.id]
-      )
     }
 
     try {
@@ -153,10 +177,8 @@ Previous Subject: ${lead.generated_subject || ''}
       >
 
       if (emailResponse.error || !emailResponse.data?.id) {
-        console.error(
-          `Resend rejected follow-up for lead ${lead.id} (${lead.email}): ${
-            emailResponse.error?.message || 'no email id returned'
-          }`
+        rejected.push(
+          `Lead ${lead.id} (${lead.email}): ${emailResponse.error?.message || 'no email id returned'}`
         )
         await pool.query('UPDATE leads SET status = $1 WHERE id = $2', ['failed', lead.id])
         continue
@@ -170,10 +192,13 @@ Previous Subject: ${lead.generated_subject || ''}
       )
 
       successfullySent++
-    } catch {
+    } catch (err) {
+      rejected.push(
+        `Lead ${lead.id} (${lead.email}): ${err instanceof Error ? err.message : String(err)}`
+      )
       await pool.query('UPDATE leads SET status = $1 WHERE id = $2', ['failed', lead.id])
     }
   }
 
-  return successfullySent
+  return { sent: successfullySent, rejected }
 }
