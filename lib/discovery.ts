@@ -5,6 +5,8 @@ import {
   MAX_PLACES_PAGES_PER_NICHE,
   PLACES_PAGES_TO_SKIP,
   MAX_SEO_SCORE_TO_SEND,
+  PLACES_TIMEOUT_MS,
+  PLACES_PAGE_DELAY_MS,
 } from './constants'
 
 interface GooglePlace {
@@ -70,7 +72,7 @@ async function fetchPlacesPage(
   apiKey: string
 ): Promise<PlacesSearchResponse> {
   const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), 10000)
+  const timeoutId = setTimeout(() => controller.abort(), PLACES_TIMEOUT_MS)
 
   try {
     const response = await fetch('https://places.googleapis.com/v1/places:searchText', {
@@ -165,7 +167,7 @@ export async function discoverBusinesses(
     }
 
     if (page < MAX_PLACES_PAGES_PER_NICHE - 1) {
-      await sleep(300)
+      await sleep(PLACES_PAGE_DELAY_MS)
     }
   }
 

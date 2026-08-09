@@ -5,10 +5,10 @@ import { expandNiches } from '@/lib/expansion'
 import { getPlacesQuotaRemaining } from '@/lib/placesQuota'
 import { recordError } from '@/lib/errors'
 import { requireCronAuth } from '@/lib/cronAuth'
+import { MAX_NICHES_PER_RUN } from '@/lib/constants'
 
 export const dynamic = 'force-dynamic'
 
-const MAX_NICHES_PER_RUN = 5
 const PENDING_LEAD_STATUSES = ['new', 'scraped', 'generated', 'no_website']
 
 // Discovery runs as a fully independent stage from the rest of the pipeline:

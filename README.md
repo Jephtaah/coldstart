@@ -48,6 +48,7 @@ Create `.env.local` (never commit it):
 | `SENDER_NAME` | Optional display name shown as the sender (omitted if unset) |
 | `REPLY_TO_EMAIL` | Where replies land |
 | `RESEND_WEBHOOK_SECRET` | Resend webhook signing secret (`whsec_…`), used to verify webhook requests |
+| `CRON_SECRET` | Shared secret protecting `/api/discover` and `/api/run-pipeline`; callers must send it in the `x-cron-secret` header. Must be set in both Vercel and as a `CRON_SECRET` repository secret in GitHub. |
 
 The GitHub Actions schedule additionally uses an `APP_URL` repository secret pointing at the deployed app.
 

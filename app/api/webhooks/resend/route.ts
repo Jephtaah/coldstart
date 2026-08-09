@@ -76,16 +76,16 @@ export async function POST(request: Request) {
   const rawBody = await request.text()
 
   const webhookSecret = process.env.RESEND_WEBHOOK_SECRET
-  if (webhookSecret) {
-    if (!verifyWebhookSignature(rawBody, request.headers, webhookSecret)) {
-      console.error('Resend webhook rejected: invalid signature')
-      return NextResponse.json({ success: false, error: 'invalid signature' }, { status: 401 })
-    }
-  } else {
-    console.error(
-      'RESEND_WEBHOOK_SECRET is not set; webhook signature verification is DISABLED. ' +
-        'Set it to the Resend webhook signing secret to authenticate requests.'
+  if (!webhookSecret) {
+    console.error('RESEND_WEBHOOK_SECRET is not set; rejecting webhook request.')
+    return NextResponse.json(
+      { success: false, error: 'server not configured for webhooks' },
+      { status: 401 }
     )
+  }
+  if (!verifyWebhookSignature(rawBody, request.headers, webhookSecret)) {
+    console.error('Resend webhook rejected: invalid signature')
+    return NextResponse.json({ success: false, error: 'invalid signature' }, { status: 401 })
   }
 
   let body: { type?: string; data?: WebhookEventData }

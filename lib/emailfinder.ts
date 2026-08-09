@@ -2,7 +2,7 @@ import { pool } from './db'
 import * as cheerio from 'cheerio'
 import { extractEmails, extractEmailsFromHtml } from './scraper'
 import { isSuppressedEmail } from './suppression'
-import { EMAIL_SEARCH_RESULT_PAGES } from './constants'
+import { MAX_EMAIL_SEARCH_RESULTS } from './constants'
 
 const DDG_HTML_URL = 'https://html.duckduckgo.com/html/'
 const SEARCH_TIMEOUT_MS = 10000
@@ -10,6 +10,39 @@ const FETCH_TIMEOUT_MS = 10000
 const REQUEST_DELAY_MS = 400
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+
+// Aggregator/directory hosts rarely expose the business's own email publicly
+// (Yelp, Facebook, etc. gate it behind their own forms) and their pages often
+// contain unrelated placeholder addresses. Skip them when fetching result pages
+// so a wrong address never gets harvested.
+const DIRECTORY_HOSTS = new Set([
+  'yelp.com',
+  'facebook.com',
+  'instagram.com',
+  'linkedin.com',
+  'twitter.com',
+  'x.com',
+  'yellowpages.com',
+  'mapquest.com',
+  'manta.com',
+  'superpages.com',
+  'chamberofcommerce.com',
+  'bbb.org',
+  'angieslist.com',
+  'homeadvisor.com',
+  'houzz.com',
+  'thumbtack.com',
+  'nextdoor.com',
+  'foursquare.com',
+])
+
+function hostname(url: string): string {
+  try {
+    return new URL(url).hostname.toLowerCase().replace(/^www\./, '')
+  } catch {
+    return ''
+  }
+}
 
 interface NoWebsiteLead {
   id: string
@@ -68,7 +101,7 @@ async function searchResultUrls(query: string): Promise<{ urls: string[]; snippe
   })
 
   return {
-    urls: Array.from(new Set(urls)).slice(0, EMAIL_SEARCH_RESULT_PAGES),
+    urls: Array.from(new Set(urls)).slice(0, MAX_EMAIL_SEARCH_RESULTS),
     snippetEmails: extractEmails(snippets.join(' ')),
   }
 }
@@ -78,6 +111,9 @@ async function findEmailForBusiness(businessName: string, city: string): Promise
   if (snippetEmails.length > 0) return snippetEmails[0]
 
   for (const url of urls) {
+    if (DIRECTORY_HOSTS.has(hostname(url))) {
+      continue
+    }
     try {
       const html = await fetchHtml(url, FETCH_TIMEOUT_MS)
       const emails = extractEmailsFromHtml(html)

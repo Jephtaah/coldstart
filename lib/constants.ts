@@ -34,7 +34,32 @@ export const SEND_INTERVAL_MS_MIN = 20000
 export const SEND_INTERVAL_MS_MAX = 40000
 export const MAX_DAILY_CAP = 100
 export const MAX_EMAIL_SEARCHES_PER_RUN = 8
-export const EMAIL_SEARCH_RESULT_PAGES = 4
+export const MAX_EMAIL_SEARCH_RESULTS = 4
+
+// Per-run stage bounds so a single Vercel function invocation stays inside the
+// platform timeout. Kept here, not scattered across route files.
+export const MAX_NICHES_PER_RUN = 5
+export const MAX_SCRAPES_PER_RUN = 12
+export const MAX_GENERATES_PER_RUN = 8
+
+// Timeouts for every external network call (abort the request, never hang the
+// batch). Also centralized so each integration is uniformly bounded.
+export const PLACES_TIMEOUT_MS = 10000
+export const SCRAPE_TIMEOUT_MS = 10000
+export const AI_TIMEOUT_MS = 20000
+export const RESEND_TIMEOUT_MS = 10000
+
+// Delay between Places page fetches to stay polite to Google.
+export const PLACES_PAGE_DELAY_MS = 300
+
+// A follow-up only goes out once this much time has passed since the initial send.
+export const FOLLOWUP_DELAY_INTERVAL = '7 days'
+
+// AI model configuration shared by generation, follow-ups, and niche expansion.
+export const DEEPSEEK_API_URL = 'https://api.deepseek.com/chat/completions'
+export const DEEPSEEK_MODEL = 'deepseek-v4-flash'
+export const DEEPSEEK_TEMPERATURE = 0.7
+export const MAX_AI_ATTEMPTS = 2
 // Alert thresholds for send-health monitoring (rolling 24h window).
 export const BOUNCE_ALERT_THRESHOLD = 5
 export const COMPLAINT_ALERT_THRESHOLD = 1
