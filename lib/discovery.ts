@@ -160,7 +160,6 @@ export async function discoverBusinesses(
         }
         break
       }
-      if (page === 0) throw err
       console.error(`Places pagination stopped at page ${page + 1}:`, err)
       status = 'partial'
       break

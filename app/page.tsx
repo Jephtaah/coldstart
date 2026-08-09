@@ -8,7 +8,7 @@ export default async function Page() {
   const [settingsRes, nichesRes, leadsRes, statsRes, statusCountsRes, errorsRes] = await Promise.all([
     pool.query('select * from settings where id = 1'),
     pool.query('select * from niches order by created_at desc'),
-    pool.query('select * from leads order by seo_score asc nulls last, created_at desc limit 500'),
+    pool.query('select * from leads order by seo_score asc nulls last, created_at desc'),
     pool.query(`
       select
         coalesce(count(*), 0) as total,

@@ -77,12 +77,15 @@ export async function GET(request: Request) {
         result = await discoverBusinesses(niche.label, niche.city, niche.id)
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err)
-        await recordError({
+        const recorded = await recordError({
           source: 'discover',
           stage: 'discovery',
           message: `Niche ${niche.label} in ${niche.city}`,
           context: { error: message },
         })
+        if (!recorded) {
+          console.error(`Error persistence failed for discover/discovery: ${message}`)
+        }
         errors.push(`Niche ${niche.label} in ${niche.city}: ${message}`)
         continue
       }
@@ -96,12 +99,15 @@ export async function GET(request: Request) {
       if (result.status === 'quota_exhausted') {
         quotaExhausted = true
         if (result.error) {
-          await recordError({
+          const recorded = await recordError({
             source: 'discover',
             stage: 'discovery',
             message: `Niche ${niche.label} in ${niche.city}`,
             context: { error: result.error },
           })
+          if (!recorded) {
+            console.error(`Error persistence failed for discover/discovery: ${result.error}`)
+          }
           errors.push(`Niche ${niche.label} in ${niche.city}: ${result.error}`)
         }
         break
@@ -136,13 +142,31 @@ export async function GET(request: Request) {
     if (parseInt(activeCheck.rows[0].count, 10) === 0) {
       try {
         expandedCount = await expandNiches()
+        // expandNiches swallows AI failures and returns 0. With no active
+        // niches left, discovery would silently do nothing forever — surface
+        // it so the run is flagged instead of stalling.
+        if (expandedCount === 0) {
+          const message = 'Niche expansion produced no new niches; no active niches remain.'
+          const recorded = await recordError({
+            source: 'discover',
+            stage: 'niche_expansion',
+            message,
+          })
+          if (!recorded) {
+            console.error(`Error persistence failed for discover/niche_expansion: ${message}`)
+          }
+          errors.push(`Niche expansion: ${message}`)
+        }
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err)
-        await recordError({
+        const recorded = await recordError({
           source: 'discover',
           stage: 'niche_expansion',
           message,
         })
+        if (!recorded) {
+          console.error(`Error persistence failed for discover/niche_expansion: ${message}`)
+        }
         errors.push(`Niche expansion: ${message}`)
       }
     }
@@ -171,11 +195,14 @@ export async function GET(request: Request) {
     })
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err)
-    await recordError({
+    const recorded = await recordError({
       source: 'discover',
       stage: 'run',
       message,
     })
+    if (!recorded) {
+      console.error(`Error persistence failed for discover/run: ${message}`)
+    }
     return NextResponse.json({ success: false, error: message }, { status: 500 })
   }
 }

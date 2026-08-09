@@ -87,9 +87,26 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: 'Label and city are required' }, { status: 400 })
       }
 
+      const trimmedLabel = label.trim()
+      const trimmedCity = city.trim()
+
+      // Dedupe case-insensitively on (label, city). If a matching niche exists
+      // but was exhausted, reactivate it instead of creating a duplicate row
+      // that would double the Google Places spend on the same search pool.
+      const existingResult = await pool.query(
+        'SELECT id, status FROM niches WHERE lower(label) = lower($1) AND lower(city) = lower($2) LIMIT 1',
+        [trimmedLabel, trimmedCity]
+      )
+      if (existingResult.rows.length > 0) {
+        if (existingResult.rows[0].status !== 'active') {
+          await pool.query('update niches set status = $1 where id = $2', ['active', existingResult.rows[0].id])
+        }
+        return NextResponse.json({ success: true, alreadyExists: true })
+      }
+
       await pool.query(
         'insert into niches (label, city, status, source) values ($1, $2, $3, $4)',
-        [label.trim(), city.trim(), 'active', 'seed']
+        [trimmedLabel, trimmedCity, 'active', 'seed']
       )
 
       return NextResponse.json({ success: true })

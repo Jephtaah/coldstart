@@ -3,7 +3,7 @@ import { Resend } from 'resend'
 import { MAX_SEO_SCORE_TO_SEND, MAX_INITIAL_SENDS_PER_DAY, RESEND_TIMEOUT_MS } from './constants'
 import { toHtml, sendDelayMs, sleep } from './emailFormat'
 
-export async function sendBatch(maxSends: number): Promise<number> {
+export async function sendBatch(maxSends: number, isExhausted?: () => boolean): Promise<number> {
   const apiKey = process.env.RESEND_API_KEY
   if (!apiKey) {
     throw new Error('RESEND_API_KEY is not set in environment variables.')
@@ -70,6 +70,8 @@ export async function sendBatch(maxSends: number): Promise<number> {
   let successfullySent = 0
 
   for (const lead of leads) {
+    if (isExhausted?.()) break
+
     if (!lead.email || !lead.generated_subject || !lead.generated_body) {
       await pool.query('UPDATE leads SET status = $1 WHERE id = $2', ['failed', lead.id])
       continue

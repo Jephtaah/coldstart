@@ -11,6 +11,13 @@ import {
 // raw JSON response into its own shape; retries on network errors, timeouts,
 // and unparseable/mismatched responses are handled once here.
 
+// Returns the configured DeepSeek API key, or null when unset. Exported so
+// callers can fail fast on a missing key without generating (and failing)
+// work that would throw on the first AI call anyway.
+export function getAiApiKey(): string | null {
+  return process.env.DEEPSEEK_API_KEY || process.env.AI_API_KEY || null
+}
+
 // Calls DeepSeek with the given prompts and returns the parsed result, or null
 // when every attempt failed. Throws only when the API key is missing (a
 // configuration error the operator must fix), so callers can tell the two apart.
@@ -19,7 +26,7 @@ export async function callDeepSeekJson<T>(
   userMessage: string,
   parse: (value: unknown) => T | null
 ): Promise<T | null> {
-  const apiKey = process.env.DEEPSEEK_API_KEY || process.env.AI_API_KEY
+  const apiKey = getAiApiKey()
   if (!apiKey) {
     throw new Error('DEEPSEEK_API_KEY or AI_API_KEY is not set in environment variables.')
   }

@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { pool } from '@/lib/db'
 import { scrapeWebsite } from '@/lib/scraper'
 import { generateEmail } from '@/lib/generator'
+import { getAiApiKey } from '@/lib/ai'
 import { sendBatch } from '@/lib/sender'
 import { sendFollowUps } from '@/lib/followup'
 import { sourceNoWebsiteEmails } from '@/lib/emailfinder'
@@ -14,6 +15,7 @@ import {
   MAX_FOLLOWUPS_PER_RUN,
   MAX_SCRAPES_PER_RUN,
   MAX_GENERATES_PER_RUN,
+  RUN_BUDGET_MS,
   FOLLOWUP_DELAY_INTERVAL,
   BOUNCE_ALERT_THRESHOLD,
   COMPLAINT_ALERT_THRESHOLD,
@@ -127,6 +129,7 @@ async function computeHasRemaining(
     `SELECT
        (SELECT COUNT(*) FROM leads WHERE status = 'new') AS to_scrape,
        (SELECT COUNT(*) FROM leads WHERE status = 'scraped') AS to_generate,
+       (SELECT COUNT(*) FROM leads WHERE status = 'no_website') AS to_source_email,
        (SELECT COUNT(*) FROM leads
         WHERE status = 'generated' AND (seo_score IS NULL OR seo_score < $1)
           AND NOT EXISTS (SELECT 1 FROM suppressed_emails se WHERE se.email = lower(leads.email))) AS to_send,
@@ -140,7 +143,9 @@ async function computeHasRemaining(
   const hasFollowupWork = remainingFollowups > 0 && parseInt(pending.to_followup, 10) > 0
   const hasProduceWork =
     remaining > 0 &&
-    (parseInt(pending.to_scrape, 10) > 0 || parseInt(pending.to_generate, 10) > 0)
+    (parseInt(pending.to_scrape, 10) > 0 ||
+      parseInt(pending.to_generate, 10) > 0 ||
+      parseInt(pending.to_source_email, 10) > 0)
   return hasSendWork || hasFollowupWork || hasProduceWork
 }
 
@@ -150,7 +155,7 @@ async function computeHasRemaining(
 async function recordStageErrors(results: Record<string, StageResult>): Promise<void> {
   for (const [stage, res] of Object.entries(results)) {
     if (!res.success || res.error) {
-      await recordError({
+      const recorded = await recordError({
         source: 'pipeline',
         stage,
         message: res.error || 'Stage failed without an error message',
@@ -161,6 +166,9 @@ async function recordStageErrors(results: Record<string, StageResult>): Promise<
           complaints: res.complaints ?? null,
         },
       })
+      if (!recorded) {
+        console.error(`Error persistence failed for pipeline/${stage}: ${res.error || 'unknown'}`)
+      }
     }
   }
 }
@@ -182,10 +190,34 @@ async function getSendBacklog(): Promise<{ toSend: number; toFollowup: number }>
   }
 }
 
+// Removes generated leads whose address has since been suppressed (bounced or
+// complained via webhook). The send query already excludes them, so without this
+// they would linger in 'generated' forever — invisible in the backlog and never
+// cleaned up. Suppressed addresses are preserved in suppressed_emails, so the
+// row deletion is safe.
+async function cleanupSuppressedGenerated(): Promise<number> {
+  const result = await pool.query(
+    `DELETE FROM leads
+     WHERE status = 'generated'
+       AND EXISTS (SELECT 1 FROM suppressed_emails se WHERE se.email = lower(leads.email))
+     RETURNING id`
+  )
+  return result.rowCount ?? 0
+}
+
+// True once the invocation has spent its soft wall-clock budget. Stages use this
+// to stop starting new units of work (individual scrapes, generations, etc.) so
+// the function returns well inside Vercel's serverless timeout on the Hobby
+// plan. The workflow loop then calls back and picks up the rest.
+function budgetExhausted(startedAt: number): boolean {
+  return Date.now() - startedAt >= RUN_BUDGET_MS
+}
+
 export async function GET(request: Request) {
   const authError = requireCronAuth(request)
   if (authError) return authError
 
+  const startedAt = Date.now()
   const results: Record<string, StageResult> = {}
 
   // Compute today's remaining send budgets. Initial sends are limited by the
@@ -240,12 +272,24 @@ export async function GET(request: Request) {
   const canSendInitial = remaining > 0 && toSend > 0
   const canSendFollowups = remainingFollowups > 0 && toFollowup > 0
 
+  // Always purge generated leads whose email is suppressed, so they don't
+  // accumulate invisibly regardless of which mode this invocation takes.
+  try {
+    const purged = await cleanupSuppressedGenerated()
+    if (purged > 0) {
+      results.cleanup = { success: true, processed: purged }
+    }
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err)
+    results.cleanup = { success: false, error: message }
+  }
+
   if (canSendInitial || canSendFollowups) {
     // Send mode: trickle out the backlog, never producing while a drain is
     // underway so each invocation stays safely inside the function timeout.
     if (canSendInitial) {
       try {
-        const sentCount = await sendBatch(MAX_SENDS_PER_RUN)
+        const sentCount = await sendBatch(MAX_SENDS_PER_RUN, () => budgetExhausted(startedAt))
         results.sending = { success: true, processed: sentCount }
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err)
@@ -255,7 +299,10 @@ export async function GET(request: Request) {
 
     if (canSendFollowups) {
       try {
-        const followupCount = await sendFollowUps(MAX_FOLLOWUPS_PER_RUN)
+        const followupCount = await sendFollowUps(
+          MAX_FOLLOWUPS_PER_RUN,
+          () => budgetExhausted(startedAt)
+        )
         results.followups = { success: true, processed: followupCount }
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err)
@@ -300,6 +347,7 @@ export async function GET(request: Request) {
       const errors: string[] = []
 
       for (const lead of leadsResult.rows) {
+        if (budgetExhausted(startedAt)) break
         try {
           const success = await scrapeWebsite(lead.id)
           if (success) scrapedCount++
@@ -324,7 +372,10 @@ export async function GET(request: Request) {
     // an email move to 'scraped' and flow into generation; leads with no findable
     // email are deleted so the database stays lean.
     try {
-      const { sourced, deleted } = await sourceNoWebsiteEmails(MAX_EMAIL_SEARCHES_PER_RUN)
+      const { sourced, deleted } = await sourceNoWebsiteEmails(
+        MAX_EMAIL_SEARCHES_PER_RUN,
+        () => budgetExhausted(startedAt)
+      )
       results.emailSourcing = {
         success: true,
         processed: sourced,
@@ -364,7 +415,14 @@ export async function GET(request: Request) {
       let generatedCount = 0
       const errors: string[] = []
 
+      if (!getAiApiKey()) {
+        // A missing key is a config error, not a lead problem: surface it once
+        // and leave the scraped leads queued. Failing them all here would
+        // permanently destroy the queue for no fault of the leads.
+        errors.push('DEEPSEEK_API_KEY or AI_API_KEY is not set in environment variables.')
+      } else {
       for (const lead of leadsResult.rows) {
+        if (budgetExhausted(startedAt)) break
         try {
           const success = await generateEmail(lead.id)
           if (success) generatedCount++
@@ -373,6 +431,7 @@ export async function GET(request: Request) {
           errors.push(`Lead ${lead.id}: ${message}`)
           await failLead(lead.id)
         }
+      }
       }
 
       results.generation = {

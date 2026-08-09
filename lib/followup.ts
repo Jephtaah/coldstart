@@ -4,7 +4,7 @@ import { MAX_FOLLOWUPS_PER_DAY, RESEND_TIMEOUT_MS, FOLLOWUP_DELAY_INTERVAL } fro
 import { toHtml, sendDelayMs, sleep } from './emailFormat'
 import { callDeepSeekJson, parseEmailResponse } from './ai'
 
-export async function sendFollowUps(maxFollowups: number): Promise<number> {
+export async function sendFollowUps(maxFollowups: number, isExhausted?: () => boolean): Promise<number> {
   const resendApiKey = process.env.RESEND_API_KEY
   if (!resendApiKey) {
     throw new Error('RESEND_API_KEY is not set in environment variables.')
@@ -61,6 +61,8 @@ export async function sendFollowUps(maxFollowups: number): Promise<number> {
   let successfullySent = 0
 
   for (const lead of leads) {
+    if (isExhausted?.()) break
+
     if (!lead.email || lead.email.trim() === '') {
       await pool.query('UPDATE leads SET status = $1 WHERE id = $2', ['failed', lead.id])
       continue

@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef, useSyncExternalStore } from 'react'
 import { useRouter } from 'next/navigation'
-import { MAX_DAILY_CAP } from '@/lib/constants'
+import { MAX_DAILY_CAP, MAX_INITIAL_SENDS_PER_DAY } from '@/lib/constants'
 
 interface Lead {
   id: string
@@ -519,12 +519,21 @@ export default function DashboardClient({
             <p className="text-[11px] font-mono uppercase tracking-widest text-[#71716B]">Sent Today / Cap</p>
             <div className="flex items-baseline justify-between mt-2">
               <span className="text-3xl font-semibold tracking-tight text-[#141413] font-mono">
-                {stats.sent_today} <span className="text-sm text-[#8C8C85] font-normal">/ {initialSettings.daily_cap}</span>
+                {stats.sent_today}{' '}
+                <span className="text-sm text-[#8C8C85] font-normal">
+                  / {Math.min(initialSettings.daily_cap, MAX_INITIAL_SENDS_PER_DAY)}
+                </span>
               </span>
               <div className="w-16 bg-[#EFEFED] h-2 rounded-full overflow-hidden border border-[#D9D9D3]">
                 <div
                   className="bg-amber-600 h-full rounded-full transition-all duration-500"
-                  style={{ width: `${Math.min(100, (stats.sent_today / Math.max(1, initialSettings.daily_cap)) * 100)}%` }}
+                  style={{
+                    width: `${Math.min(
+                      100,
+                      (stats.sent_today / Math.max(1, Math.min(initialSettings.daily_cap, MAX_INITIAL_SENDS_PER_DAY))) *
+                        100
+                    )}%`,
+                  }}
                 />
               </div>
             </div>
