@@ -134,3 +134,11 @@ Site scoring and the 60/40 site/discovery merge are unchanged; the send cutoff s
 
 - Google Places caps every query at 60 results (3 pages of 20); pages 4+ do not exist. The pipeline already collects the deepest available page, so "starting from page 5" is not possible through this API.
 - The chosen strategy to surface weaker businesses is **query refinement** — splitting cities into neighborhoods/zip codes and adding qualifiers so less-prominent businesses fall within the 60-result window. This is a future item, not yet built.
+
+### 9.7 Discovery decoupled from the pipeline & daily Places budget
+
+- **Two endpoints instead of one monolithic run.** Discovery moved out of `/api/run-pipeline` into its own `/api/discover` route. The pipeline route now only processes leads already in the database (send → scrape → email source → generate); discovery runs independently. A Google Places quota outage or timeout therefore can no longer hold up scraping, generation, or sending — the stages operate off whatever the database already holds.
+- **Hard daily Places budget.** Every Google Places page fetch is one billable request, and the old loop re-ran discovery repeatedly (re-fetching already-known places) which burned the free credit fast. Discovery now reserves one call per page against a daily cap (`MAX_PLACES_CALLS_PER_DAY = 100`, configurable in `lib/constants.ts`) tracked on the settings row (`places_used_date` / `places_used_count`, applied via `docs/sql/add-places-budget.sql`). When the budget is spent, discovery skips cleanly (`skipped: 'quota_exhausted'`) until the next day — it never fails or retries into the API.
+- **Quota errors short-circuit.** A `429` / quota `403` from Google stops discovery immediately for the day instead of hammering the endpoint.
+- **Niche exhaustion is only real exhaustion.** A niche is marked `exhausted` only when a discovery run actually completed and found no new leads. Quota-skipped or failed runs never mark a niche exhausted.
+- **Workflow** now calls `/api/discover` once, then loops `/api/run-pipeline` until the backlog is drained.

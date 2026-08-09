@@ -15,7 +15,17 @@ jobs:
   run:
     runs-on: ubuntu-latest
     steps:
-      - name: Call pipeline endpoint
+      - name: Discover new businesses
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+        run: |
+          # Discovery runs on its own endpoint so a Google Places quota outage
+          # (or timeout) can never hold up scraping/generation/sending below.
+          echo "--- discovery ---"
+          curl -fsS -X GET "$APP_URL/api/discover" || true
+          echo ""
+
+      - name: Run pipeline until backlog drained
         env:
           APP_URL: ${{ secrets.APP_URL }}
         run: |

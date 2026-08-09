@@ -1,5 +1,6 @@
 import { pool } from './db'
 import { scoreDiscoverySignals } from './seo'
+import { consumePlacesQuota } from './placesQuota'
 import {
   MAX_PLACES_PAGES_PER_NICHE,
   PLACES_PAGES_TO_SKIP,
@@ -26,6 +27,18 @@ interface PlaceWithPage {
   place: GooglePlace
   pageIndex: number
 }
+
+export type DiscoveryStatus = 'ok' | 'quota_exhausted'
+
+export interface DiscoverResult {
+  inserted: number
+  status: DiscoveryStatus
+}
+
+// Thrown when Google replies with a quota/rate-limit response (429, or 403 with
+// a billing/quota message). Distinct from ordinary request failures so discovery
+// can stop immediately instead of hammering the API for the rest of the day.
+export class PlacesQuotaError extends Error {}
 
 const FIELDMASK =
   'places.id,places.displayName,places.formattedAddress,places.websiteUri,places.rating,places.userRatingCount,nextPageToken'
@@ -55,13 +68,22 @@ async function fetchPlacesPage(
     })
 
     if (!response.ok) {
+      const body = await response.text()
+      if (response.status === 429 || response.status === 403) {
+        throw new PlacesQuotaError(
+          `Google Places API quota/rate-limit error (${response.status}): ${body}`
+        )
+      }
       throw new Error(
-        `Google Places API request failed with status ${response.status}: ${await response.text()}`
+        `Google Places API request failed with status ${response.status}: ${body}`
       )
     }
 
     return (await response.json()) as PlacesSearchResponse
   } catch (err: unknown) {
+    if (err instanceof PlacesQuotaError) {
+      throw err
+    }
     throw new Error(
       `Google Places API network error or timeout: ${err instanceof Error ? err.message : String(err)}`
     )
@@ -74,7 +96,7 @@ export async function discoverBusinesses(
   nicheLabel: string,
   city: string,
   nicheId: string
-): Promise<number> {
+): Promise<DiscoverResult> {
   const apiKey = process.env.GOOGLE_PLACES_API_KEY
   if (!apiKey) {
     throw new Error('GOOGLE_PLACES_API_KEY is not set in environment variables.')
@@ -83,8 +105,18 @@ export async function discoverBusinesses(
   const textQuery = `${nicheLabel} in ${city}`
   const collected: PlaceWithPage[] = []
   let pageToken: string | undefined
+  let status: DiscoveryStatus = 'ok'
 
   for (let page = 0; page < MAX_PLACES_PAGES_PER_NICHE; page++) {
+    // Every page fetch bills one Places request, so reserve it against the
+    // daily budget before calling Google. When the budget is spent, stop
+    // paginating immediately; leads already collected still get inserted.
+    const reserved = await consumePlacesQuota(1)
+    if (!reserved) {
+      status = 'quota_exhausted'
+      break
+    }
+
     try {
       const data = await fetchPlacesPage(textQuery, pageToken, apiKey)
       // Ignore the first PLACES_PAGES_TO_SKIP pages entirely (Google ranks
@@ -97,6 +129,10 @@ export async function discoverBusinesses(
       pageToken = data.nextPageToken
       if (!pageToken) break
     } catch (err: unknown) {
+      if (err instanceof PlacesQuotaError) {
+        status = 'quota_exhausted'
+        break
+      }
       if (page === 0) throw err
       console.error(`Places pagination stopped at page ${page + 1}:`, err)
       break
@@ -121,7 +157,7 @@ export async function discoverBusinesses(
     ({ place }) => place.id && place.displayName?.text
   )
   if (validPlaces.length === 0) {
-    return 0
+    return { inserted: 0, status }
   }
 
   const placeIds = validPlaces.map(({ place }) => place.id)
@@ -171,13 +207,13 @@ export async function discoverBusinesses(
       continue
     }
 
-    const status = hasWebsite ? 'new' : 'no_website'
+    const leadStatus = hasWebsite ? 'new' : 'no_website'
 
     const insertResult = await pool.query(
       `INSERT INTO leads (niche_id, business_name, address, website, place_id, status, seo_score, seo_flags)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        ON CONFLICT (place_id) DO NOTHING`,
-      [nicheId, businessName, address, website, placeId, status, discovery.score, discovery.flags.join(',') || null]
+      [nicheId, businessName, address, website, placeId, leadStatus, discovery.score, discovery.flags.join(',') || null]
     )
 
     if (insertResult.rowCount && insertResult.rowCount > 0) {
@@ -185,5 +221,5 @@ export async function discoverBusinesses(
     }
   }
 
-  return newLeadsCount
+  return { inserted: newLeadsCount, status }
 }
