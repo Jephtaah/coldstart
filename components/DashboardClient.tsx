@@ -469,10 +469,10 @@ export default function DashboardClient({
   return (
     <div className="min-h-screen bg-[#F8F8F5] text-[#141413] font-sans selection:bg-[#141413] selection:text-[#F8F8F5]">
       {/* Editorial Top Header */}
-      <header className="border-b border-[#E6E6DF] bg-white/80 backdrop-blur-md sticky top-0 z-30 px-6 py-4">
-        <div className="max-w-7xl mx-auto flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+      <header className="border-b border-[#E6E6DF] bg-white/80 backdrop-blur-md sticky top-0 z-30 px-4 sm:px-6 py-4">
+        <div className="max-w-7xl mx-auto flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-lg bg-[#141413] text-white flex items-center justify-center font-mono font-bold text-sm tracking-tighter shadow-sm">
+            <div className="w-9 h-9 rounded-lg bg-[#141413] text-white flex items-center justify-center font-mono font-bold text-sm tracking-tighter shadow-sm shrink-0">
               CS
             </div>
             <div>
@@ -480,19 +480,19 @@ export default function DashboardClient({
             </div>
           </div>
 
-          <div className="flex items-center gap-4 bg-[#F2F2EE] px-3.5 py-1.5 rounded-full border border-[#E0E0D8]">
+          <div className="flex flex-wrap items-center gap-2 sm:gap-4 bg-[#F2F2EE] px-3.5 py-1.5 rounded-full border border-[#E0E0D8] max-w-full">
             <div className="flex items-center gap-2">
               <span
-                className={`w-2 h-2 rounded-full animate-pulse ${
+                className={`w-2 h-2 rounded-full animate-pulse shrink-0 ${
                   paused ? 'bg-amber-500' : 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]'
                 }`}
               />
-              <span className="text-xs font-medium uppercase tracking-wider text-[#383833]">
+              <span className="text-xs font-medium uppercase tracking-wider text-[#383833] whitespace-nowrap">
                 {paused ? 'Pipeline Paused' : 'Pipeline Running'}
               </span>
             </div>
-            <span className="text-[#D0D0C8]">|</span>
-            <span className="text-xs text-[#6B6B65] font-mono">
+            <span className="text-[#D0D0C8] hidden sm:inline">|</span>
+            <span className="text-xs text-[#6B6B65] font-mono whitespace-nowrap">
               Sync: {!initialSettings.last_run_at ? 'Never' : mounted ? new Date(initialSettings.last_run_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '…'}
             </span>
           </div>
@@ -561,11 +561,11 @@ export default function DashboardClient({
         </div>
 
         {/* Navigation Tabs */}
-        <div className="border-b border-[#E6E6DF] flex items-center justify-between">
-          <nav className="-mb-px flex space-x-8">
+        <div className="border-b border-[#E6E6DF]">
+          <nav className="-mb-px flex gap-5 sm:gap-8 overflow-x-auto no-scrollbar">
             <button
               onClick={() => setActiveTab('leads')}
-              className={`py-3.5 px-1 border-b-2 font-medium text-sm transition-colors flex items-center gap-2 ${
+              className={`py-3.5 px-1 border-b-2 font-medium text-sm transition-colors flex items-center gap-2 shrink-0 whitespace-nowrap ${
                 activeTab === 'leads'
                   ? 'border-[#141413] text-[#141413]'
                   : 'border-transparent text-[#71716B] hover:text-[#383833] hover:border-[#CCCCCC]'
@@ -578,7 +578,7 @@ export default function DashboardClient({
             </button>
             <button
               onClick={() => setActiveTab('targeting')}
-              className={`py-3.5 px-1 border-b-2 font-medium text-sm transition-colors flex items-center gap-2 ${
+              className={`py-3.5 px-1 border-b-2 font-medium text-sm transition-colors flex items-center gap-2 shrink-0 whitespace-nowrap ${
                 activeTab === 'targeting'
                   ? 'border-[#141413] text-[#141413]'
                   : 'border-transparent text-[#71716B] hover:text-[#383833] hover:border-[#CCCCCC]'
@@ -591,7 +591,7 @@ export default function DashboardClient({
             </button>
             <button
               onClick={() => setActiveTab('settings')}
-              className={`py-3.5 px-1 border-b-2 font-medium text-sm transition-colors ${
+              className={`py-3.5 px-1 border-b-2 font-medium text-sm transition-colors shrink-0 whitespace-nowrap ${
                 activeTab === 'settings'
                   ? 'border-[#141413] text-[#141413]'
                   : 'border-transparent text-[#71716B] hover:text-[#383833] hover:border-[#CCCCCC]'
@@ -601,7 +601,7 @@ export default function DashboardClient({
             </button>
             <button
               onClick={() => setActiveTab('errors')}
-              className={`py-3.5 px-1 border-b-2 font-medium text-sm transition-colors flex items-center gap-2 ${
+              className={`py-3.5 px-1 border-b-2 font-medium text-sm transition-colors flex items-center gap-2 shrink-0 whitespace-nowrap ${
                 activeTab === 'errors'
                   ? 'border-[#141413] text-[#141413]'
                   : 'border-transparent text-[#71716B] hover:text-[#383833] hover:border-[#CCCCCC]'

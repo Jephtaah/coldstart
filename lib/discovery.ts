@@ -149,8 +149,9 @@ export async function discoverBusinesses(
 
     try {
       const data = await fetchPlacesPage(textQuery, pageToken, apiKey)
-      // Ignore the first PLACES_PAGES_TO_SKIP pages entirely (Google ranks
-      // them by prominence, so they hold the businesses that don't need us).
+      // Ignore the first PLACES_PAGES_TO_SKIP pages entirely, if configured.
+      // Google ranks pages by prominence; pagePenalty() in lib/seo.ts scores
+      // and suppresses the businesses that don't need us instead of a hard skip.
       if (page >= PLACES_PAGES_TO_SKIP) {
         for (const place of data.places || []) {
           collected.push({ place, pageIndex: page })

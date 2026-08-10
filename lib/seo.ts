@@ -30,8 +30,8 @@ function clampScore(value: number): number {
 }
 
 function pagePenalty(pageIndex: number): number {
-  if (pageIndex <= 0) return 0
-  if (pageIndex === 1) return 15
+  if (pageIndex <= 0) return 30
+  if (pageIndex === 1) return 40
   if (pageIndex === 2) return 40
   if (pageIndex === 3) return 55
   return 65
