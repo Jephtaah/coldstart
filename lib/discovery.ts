@@ -115,7 +115,8 @@ async function fetchPlacesPage(
 export async function discoverBusinesses(
   nicheLabel: string,
   city: string,
-  nicheId: string
+  nicheId: string,
+  isExhausted?: () => boolean
 ): Promise<DiscoverResult> {
   const apiKey = process.env.GOOGLE_PLACES_API_KEY
   if (!apiKey) {
@@ -129,6 +130,14 @@ export async function discoverBusinesses(
   let resultError: string | undefined
 
   for (let page = 0; page < MAX_PLACES_PAGES_PER_NICHE; page++) {
+    // Stay inside the caller's wall-clock budget: stop paginating this niche
+    // mid-run rather than only checking between niches, so one niche with a
+    // full page count can't push a single invocation past its timeout.
+    if (isExhausted?.()) {
+      status = 'partial'
+      break
+    }
+
     // Every page fetch bills one Places request, so reserve it against the
     // daily budget before calling Google. When the budget is spent, stop
     // paginating immediately; leads already collected still get inserted.

@@ -25,7 +25,7 @@ export const DEFAULT_CITIES = [
 export const MAX_PLACES_PAGES_PER_NICHE = 3
 export const PLACES_PAGES_TO_SKIP = 2
 export const MAX_PLACES_CALLS_PER_DAY = 100
-export const MAX_SEO_SCORE_TO_SEND = 65
+export const MAX_SEO_SCORE_TO_SEND = 75
 export const MAX_INITIAL_SENDS_PER_DAY = 50
 export const MAX_FOLLOWUPS_PER_DAY = 50
 export const MAX_SENDS_PER_RUN = 2
@@ -38,7 +38,7 @@ export const MAX_EMAIL_SEARCH_RESULTS = 4
 
 // Per-run stage bounds so a single Vercel function invocation stays inside the
 // platform timeout. Kept here, not scattered across route files.
-export const MAX_NICHES_PER_RUN = 5
+export const MAX_NICHES_PER_RUN = 20
 export const MAX_SCRAPES_PER_RUN = 6
 export const MAX_GENERATES_PER_RUN = 4
 
@@ -54,6 +54,11 @@ export const RESEND_TIMEOUT_MS = 10000
 // starting new work once it is spent (a late in-flight call may still finish,
 // but nothing new begins after this point).
 export const RUN_BUDGET_MS = 45000
+
+// Same budget for the discovery route, which can now touch many niches per run
+// (each one paginating Google Places). Without a cap, a large active-niche set
+// would push a single invocation past the function timeout.
+export const DISCOVER_BUDGET_MS = 45000
 
 // Delay between Places page fetches to stay polite to Google.
 export const PLACES_PAGE_DELAY_MS = 300
