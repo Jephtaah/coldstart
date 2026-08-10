@@ -26,3 +26,10 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: #a3a39e;
 }
+
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}

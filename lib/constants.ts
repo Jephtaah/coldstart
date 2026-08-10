@@ -23,12 +23,12 @@ export const DEFAULT_CITIES = [
 ]
 
 export const MAX_PLACES_PAGES_PER_NICHE = 3
-export const PLACES_PAGES_TO_SKIP = 2
+export const PLACES_PAGES_TO_SKIP = 0
 export const MAX_PLACES_CALLS_PER_DAY = 100
 export const MAX_SEO_SCORE_TO_SEND = 75
 export const MAX_INITIAL_SENDS_PER_DAY = 50
 export const MAX_FOLLOWUPS_PER_DAY = 50
-export const MAX_SENDS_PER_RUN = 2
+export const MAX_SENDS_PER_RUN = 50
 export const MAX_FOLLOWUPS_PER_RUN = 2
 export const SEND_INTERVAL_MS_MIN = 20000
 export const SEND_INTERVAL_MS_MAX = 40000
