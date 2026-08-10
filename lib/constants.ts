@@ -39,8 +39,8 @@ export const MAX_EMAIL_SEARCH_RESULTS = 4
 // Per-run stage bounds so a single Vercel function invocation stays inside the
 // platform timeout. Kept here, not scattered across route files.
 export const MAX_NICHES_PER_RUN = 20
-export const MAX_SCRAPES_PER_RUN = 6
-export const MAX_GENERATES_PER_RUN = 4
+export const MAX_SCRAPES_PER_RUN = 12
+export const MAX_GENERATES_PER_RUN = 8
 
 // Timeouts for every external network call (abort the request, never hang the
 // batch). Also centralized so each integration is uniformly bounded.
