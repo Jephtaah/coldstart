@@ -5,9 +5,12 @@ import { isSuppressedEmail } from './suppression'
 import { MAX_EMAIL_SEARCH_RESULTS } from './constants'
 
 const DDG_HTML_URL = 'https://html.duckduckgo.com/html/'
+const BING_HTML_URL = 'https://www.bing.com/search'
 const SEARCH_TIMEOUT_MS = 10000
 const FETCH_TIMEOUT_MS = 10000
 const REQUEST_DELAY_MS = 400
+const SEARCH_ATTEMPTS = 2
+const SEARCH_RETRY_DELAY_MS = 2000
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 
@@ -74,7 +77,12 @@ async function fetchHtml(url: string, timeoutMs: number): Promise<string> {
   }
 }
 
-async function searchResultUrls(query: string): Promise<{ urls: string[]; snippetEmails: string[] }> {
+interface SearchResults {
+  urls: string[]
+  snippetEmails: string[]
+}
+
+async function ddgSearch(query: string): Promise<SearchResults> {
   const controller = new AbortController()
   const timeoutId = setTimeout(() => controller.abort(), SEARCH_TIMEOUT_MS)
 
@@ -91,7 +99,7 @@ async function searchResultUrls(query: string): Promise<{ urls: string[]; snippe
   // DuckDuckGo answers a rate limit with HTTP 202 (and sometimes 403) plus an
   // "unusual traffic" page. That is NOT "no results": treating it as a clean
   // empty search would delete the lead and permanently suppress its place.
-  // Throw instead so the caller keeps the lead queued for a later retry.
+  // Throw instead so the caller retries and/or falls back to another engine.
   if (!res.ok || res.status === 202 || res.status === 403) {
     throw new Error(`DuckDuckGo search failed with status ${res.status}`)
   }
@@ -128,6 +136,79 @@ async function searchResultUrls(query: string): Promise<{ urls: string[]; snippe
   return {
     urls: Array.from(new Set(urls)).slice(0, MAX_EMAIL_SEARCH_RESULTS),
     snippetEmails: extractEmails(snippets.join(' ')),
+  }
+}
+
+// Fallback engine: Bing's HTML results. DuckDuckGo frequently blocks
+// datacenter IPs (GitHub Actions runners) with 403s, and a 403 means "blocked",
+// not "no results" — so when DDG is unreachable we try Bing before giving up so
+// the lead stays in the queue instead of being wrongly treated as un-emailable.
+async function bingSearch(query: string): Promise<SearchResults> {
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), SEARCH_TIMEOUT_MS)
+
+  let res: Response
+  try {
+    res = await fetch(`${BING_HTML_URL}?q=${encodeURIComponent(query)}`, {
+      signal: controller.signal,
+      headers: {
+        'User-Agent': USER_AGENT,
+        'Accept-Language': 'en-US,en;q=0.9',
+      },
+    })
+  } finally {
+    clearTimeout(timeoutId)
+  }
+
+  if (!res.ok) {
+    throw new Error(`Bing search failed with status ${res.status}`)
+  }
+
+  const html = await res.text()
+  if (/captcha|unusual traffic/i.test(html) && html.length < 20000) {
+    throw new Error('Bing served a captcha/block page')
+  }
+
+  const $ = cheerio.load(html)
+
+  const urls: string[] = []
+  $('li.b_algo h2 a').each((_, el) => {
+    const href = $(el).attr('href')
+    if (href && href.startsWith('http')) urls.push(href)
+  })
+
+  const snippets: string[] = []
+  $('li.b_algo .b_caption p, li.b_algo p').each((_, el) => {
+    const text = $(el).text()
+    if (text) snippets.push(text)
+  })
+
+  return {
+    urls: Array.from(new Set(urls)).slice(0, MAX_EMAIL_SEARCH_RESULTS),
+    snippetEmails: extractEmails(snippets.join(' ')),
+  }
+}
+
+async function searchResultUrls(query: string): Promise<SearchResults> {
+  // Try DuckDuckGo with a bounded retry: a 202/403/429 is a bot/rate-limit
+  // response that can clear within seconds, so retry once before falling back
+  // to Bing. Only if every attempt and the fallback fail do we surface an error
+  // (which keeps the lead queued rather than deleting it as "no email found").
+  let lastDdgError: string | null = null
+  for (let attempt = 1; attempt <= SEARCH_ATTEMPTS; attempt++) {
+    try {
+      return await ddgSearch(query)
+    } catch (err) {
+      lastDdgError = err instanceof Error ? err.message : String(err)
+      if (attempt < SEARCH_ATTEMPTS) await sleep(SEARCH_RETRY_DELAY_MS)
+    }
+  }
+
+  try {
+    return await bingSearch(query)
+  } catch (err) {
+    const bingError = err instanceof Error ? err.message : String(err)
+    throw new Error(`Email search failed: ${lastDdgError}; Bing fallback: ${bingError}`)
   }
 }
 
@@ -203,10 +284,11 @@ export async function sourceNoWebsiteEmails(
 
     const fallbackContent = `Business Name: ${businessName}\nAddress: ${lead.address || 'Unknown Address'}\nCity: ${city}\nWebsite: None`
 
-    if (email && email.trim() !== '') {
+    const trimmedEmail = email?.trim()
+    if (trimmedEmail) {
       await pool.query(
         `UPDATE leads SET email = $1, scraped_content = $2, status = 'scraped' WHERE id = $3`,
-        [email, fallbackContent, lead.id]
+        [trimmedEmail, fallbackContent, lead.id]
       )
       sourced++
     } else {

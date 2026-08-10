@@ -5,7 +5,7 @@ import { expandNiches } from '@/lib/expansion'
 import { getPlacesQuotaRemaining } from '@/lib/placesQuota'
 import { recordError } from '@/lib/errors'
 import { requireCronAuth } from '@/lib/cronAuth'
-import { MAX_NICHES_PER_RUN } from '@/lib/constants'
+import { MAX_NICHES_PER_RUN, DISCOVER_BUDGET_MS } from '@/lib/constants'
 
 export const dynamic = 'force-dynamic'
 
@@ -59,6 +59,7 @@ export async function GET(request: Request) {
   }
 
   try {
+    const startedAt = Date.now()
     const nichesResult = await pool.query(
       'SELECT id, label, city FROM niches WHERE status = $1 LIMIT $2',
       ['active', MAX_NICHES_PER_RUN]
@@ -72,9 +73,15 @@ export async function GET(request: Request) {
     let quotaExhausted = false
 
     for (const niche of niches) {
+      // Stay inside the serverless timeout: stop starting new niches once the
+      // wall-clock budget is spent. Niches not reached are retried next run.
+      if (Date.now() - startedAt >= DISCOVER_BUDGET_MS) break
+
       let result: DiscoverResult
       try {
-        result = await discoverBusinesses(niche.label, niche.city, niche.id)
+        result = await discoverBusinesses(niche.label, niche.city, niche.id, () =>
+          Date.now() - startedAt >= DISCOVER_BUDGET_MS
+        )
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err)
         const recorded = await recordError({

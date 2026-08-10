@@ -154,7 +154,7 @@ async function computeHasRemaining(
 // recorded even when a stage throws early.
 async function recordStageErrors(results: Record<string, StageResult>): Promise<void> {
   for (const [stage, res] of Object.entries(results)) {
-    if (!res.success || res.error) {
+    if (!res.success) {
       const recorded = await recordError({
         source: 'pipeline',
         stage,
@@ -405,19 +405,30 @@ export async function GET(request: Request) {
       )
       let deletedHighScoreCount = 0
       for (const row of highScoreResult.rows) {
-        if (row.place_id) {
-          await pool.query(
-            `INSERT INTO suppressed_places (place_id) VALUES ($1) ON CONFLICT (place_id) DO NOTHING`,
-            [row.place_id]
-          )
+        const client = await pool.connect()
+        try {
+          await client.query('BEGIN')
+          if (row.place_id) {
+            await client.query(
+              `INSERT INTO suppressed_places (place_id) VALUES ($1) ON CONFLICT (place_id) DO NOTHING`,
+              [row.place_id]
+            )
+          }
+          await client.query('DELETE FROM leads WHERE id = $1', [row.id])
+          await client.query('COMMIT')
+          deletedHighScoreCount++
+        } catch (err: unknown) {
+          await client.query('ROLLBACK')
+          throw err
+        } finally {
+          client.release()
         }
-        await pool.query('DELETE FROM leads WHERE id = $1', [row.id])
-        deletedHighScoreCount++
       }
 
       const leadsResult = await pool.query(
         `SELECT l.id FROM leads l
          WHERE l.status = $1
+           AND l.email IS NOT NULL
            AND NOT EXISTS (SELECT 1 FROM suppressed_emails se WHERE se.email = lower(l.email))
          ORDER BY l.seo_score ASC NULLS LAST LIMIT $2`,
         ['scraped', MAX_GENERATES_PER_RUN]
@@ -431,23 +442,23 @@ export async function GET(request: Request) {
         // permanently destroy the queue for no fault of the leads.
         errors.push('DEEPSEEK_API_KEY or AI_API_KEY is not set in environment variables.')
       } else {
-      for (const lead of leadsResult.rows) {
-        if (budgetExhausted(startedAt)) break
-        try {
-          const success = await generateEmail(lead.id)
-          if (success) generatedCount++
-        } catch (err: unknown) {
-          const message = err instanceof Error ? err.message : String(err)
-          errors.push(`Lead ${lead.id}: ${message}`)
-          // An AI provider failure is not the lead's fault: keep it queued so a
-          // later run retries generation instead of permanently losing a valid
-          // outreach target. Other failures (e.g. DB errors) fail the lead so
-          // it leaves the work queue.
-          if (!(err instanceof AiUnavailableError)) {
-            await failLead(lead.id)
+        for (const lead of leadsResult.rows) {
+          if (budgetExhausted(startedAt)) break
+          try {
+            const success = await generateEmail(lead.id)
+            if (success) generatedCount++
+          } catch (err: unknown) {
+            const message = err instanceof Error ? err.message : String(err)
+            errors.push(`Lead ${lead.id}: ${message}`)
+            // An AI provider failure is not the lead's fault: keep it queued so a
+            // later run retries generation instead of permanently losing a valid
+            // outreach target. Other failures (e.g. DB errors) fail the lead so
+            // it leaves the work queue.
+            if (!(err instanceof AiUnavailableError)) {
+              await failLead(lead.id)
+            }
           }
         }
-      }
       }
 
       results.generation = {

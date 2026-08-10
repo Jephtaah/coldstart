@@ -22,43 +22,77 @@ jobs:
         run: |
           # Discovery runs on its own endpoint so a Google Places quota outage
           # (or timeout) can never hold up scraping/generation/sending below.
-          # Fail the step on a network error (non-zero curl exit), a non-200
-          # HTTP status (401 auth, 500, etc.), or an endpoint-reported failure
-          # so the workflow surfaces it instead of silently passing.
+          # Parse the response with jq and check the TOP-LEVEL success field
+          # only -- a naive `grep '"success":false'` would also match nested
+          # per-niche stage results and fail the job on a non-fatal blip.
           echo "--- discovery ---"
-          RESPONSE=$(curl -sS -X GET -H "x-cron-secret: $CRON_SECRET" \
-            -w $'\nHTTP_STATUS:%{http_code}' \
-            "$APP_URL/api/discover") || exit 1
-          echo "$RESPONSE"
-          if ! echo "$RESPONSE" | grep -q 'HTTP_STATUS:200' || echo "$RESPONSE" | grep -q '"success":false'; then
-            echo "::error::Discovery did not return HTTP 200 + success. Check APP_URL/CRON_SECRET and the errors table."
+          BODY=$(mktemp)
+          CODE=$(curl -sS -o "$BODY" -w '%{http_code}' \
+            -X GET -H "x-cron-secret: $CRON_SECRET" \
+            "$APP_URL/api/discover") || CODE=000
+          echo "HTTP_STATUS:$CODE"
+          if [ "$CODE" != "200" ]; then
+            echo "::error::Discovery did not return HTTP 200 (got $CODE). Check APP_URL/CRON_SECRET."
+            cat "$BODY"
             exit 1
           fi
+          if ! jq -e . "$BODY" >/dev/null 2>&1; then
+            echo "::error::Discovery returned non-JSON body."
+            cat "$BODY"
+            exit 1
+          fi
+          if [ "$(jq -r '.success' "$BODY")" != "true" ]; then
+            echo "::error::Discovery reported success:false. Check the errors table."
+            cat "$BODY"
+            exit 1
+          fi
+          cat "$BODY"
+          echo
 
       - name: Run pipeline until backlog drained
         env:
           APP_URL: ${{ secrets.APP_URL }}
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
+          # Each iteration returns HTTP 200 + top-level success:true even when a
+          # stage inside failed -- stage failures are logged to the errors table
+          # by the endpoint itself. So this loop only hard-fails on transport
+          # errors or endpoint-level failures; a failed stage never stops the
+          # loop. jq is preinstalled on ubuntu-latest.
           FAILED=0
           for i in $(seq 1 40); do
             echo "--- pipeline iteration $i ---"
-            RESPONSE=$(curl -sS -X GET -H "x-cron-secret: $CRON_SECRET" \
-              -w $'\nHTTP_STATUS:%{http_code}' \
-              "$APP_URL/api/run-pipeline") || true
-            if [ -z "$RESPONSE" ] || ! echo "$RESPONSE" | grep -q 'HTTP_STATUS:200'; then
-              echo "::warning::Pipeline iteration $i did not return HTTP 200 (check APP_URL/CRON_SECRET)."
+            BODY=$(mktemp)
+            CODE=$(curl -sS -o "$BODY" -w '%{http_code}' \
+              -X GET -H "x-cron-secret: $CRON_SECRET" \
+              "$APP_URL/api/run-pipeline") || CODE=000
+            echo "HTTP_STATUS:$CODE"
+            if [ "$CODE" != "200" ] || ! jq -e . "$BODY" >/dev/null 2>&1; then
+              echo "::warning::Pipeline iteration $i did not return HTTP 200 / valid JSON (got $CODE)."
+              cat "$BODY"
               FAILED=1
               sleep 15
               continue
             fi
-            if echo "$RESPONSE" | grep -q '"success":false'; then
-              echo "::error::Pipeline run reported a failure; check the errors table."
-              echo "$RESPONSE"
-              exit 1
+
+            # Surface every stage failure in the action log so nothing is lost,
+            # but keep looping -- a broken stage is not a reason to stop the day.
+            jq -r '.results | to_entries[]
+                   | select(.value.success == false)
+                   | "::error::stage " + .key + ": " + (.value.error // "unknown error")' \
+              "$BODY" || true
+
+            if [ "$(jq -r '.success' "$BODY")" != "true" ]; then
+              echo "::error::Pipeline run reported an endpoint-level failure; check the errors table."
+              cat "$BODY"
+              FAILED=1
+              sleep 15
+              continue
             fi
-            echo "$RESPONSE"
-            if ! echo "$RESPONSE" | grep -q '"hasRemaining":true'; then
+
+            cat "$BODY"
+            echo
+            if [ "$(jq -r '.hasRemaining' "$BODY")" != "true" ]; then
               echo "Pipeline finished."
               exit $FAILED
             fi
