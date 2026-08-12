@@ -618,6 +618,17 @@ export default function DashboardClient({
         {/* Tab 1: Leads */}
         {activeTab === 'leads' && (
           <div className="bg-white rounded-xl border border-[#E6E6DF] shadow-[0_1px_3px_rgba(0,0,0,0.02)] overflow-hidden">
+            <div className="p-4 sm:p-5 border-b border-[#E6E6DF]">
+              <h2 className="text-base font-semibold tracking-tight text-[#141413]">Leads Directory</h2>
+              <p className="text-sm text-[#71716B] mt-0.5">
+                Every business the pipeline has discovered, scored, and (where eligible) emailed. SEO score is 0-100
+                (lower = weaker site = higher outreach priority); leads scoring 65+ are dropped automatically before
+                generation. Status moves <span className="font-mono text-xs">new → scraped → generated → sent →
+                followed_up</span>, or <span className="font-mono text-xs">no_website</span> /
+                <span className="font-mono text-xs"> failed</span> when the pipeline can&apos;t proceed. Click a row to read the
+                generated email.
+              </p>
+            </div>
             <div className="p-4 sm:p-5 border-b border-[#E6E6DF] bg-[#FAFAF7] flex flex-col sm:flex-row justify-between items-center gap-4">
               <div className="flex items-center gap-1.5 w-full sm:flex-1 sm:min-w-0">
                 <div className="hidden sm:flex flex-nowrap items-center gap-1.5 overflow-x-auto">
