@@ -21,6 +21,7 @@ const instrumentSerif = Instrument_Serif({
 export const metadata: Metadata = {
   title: 'ColdStart Operator',
   description: 'Local business outreach pipeline dashboard',
+  manifest: '/site.webmanifest',
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
