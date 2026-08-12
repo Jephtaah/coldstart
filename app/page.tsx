@@ -1,5 +1,5 @@
 import Link from 'next/link'
-import DashboardPreview from '@/components/DashboardPreview'
+import DashboardPreviewFrame from '@/components/DashboardPreviewFrame'
 
 const GITHUB_URL = 'https://github.com/Jephtaah/ColdStart'
 
@@ -103,16 +103,8 @@ export default function LandingPage() {
           </div>
         </section>
 
-        <section className="px-5 sm:px-10 lg:px-20 pb-14 lg:pb-[90px]">
-          <div className="relative border border-[#E6E6DF] rounded-2xl overflow-hidden bg-white shadow-[0_24px_60px_-30px_rgba(20,20,19,0.28)] h-[260px] sm:h-[380px] lg:h-[540px]">
-            <span className="sr-only">Screenshot of the ColdStart operator dashboard</span>
-            <div
-              className="w-[1440px] h-[1400px] origin-top-left scale-[0.18] sm:scale-[0.264] lg:scale-[0.6389]"
-              aria-hidden="true"
-            >
-              <DashboardPreview />
-            </div>
-          </div>
+        <section className="px-5 sm:px-10 lg:px-20 pb-14 lg:pb-[90px] max-w-[920px] mx-auto w-full">
+          <DashboardPreviewFrame />
         </section>
 
         <section className="px-5 sm:px-10 lg:px-20 pb-14 lg:pb-24 max-w-[920px] mx-auto w-full">
