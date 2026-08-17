@@ -59,7 +59,14 @@ jobs:
           # by the endpoint itself. So this loop only hard-fails on transport
           # errors or endpoint-level failures; a failed stage never stops the
           # loop. jq is preinstalled on ubuntu-latest.
-          FAILED=0
+          #
+          # Transport/endpoint blips (curl reset, SSL error, transient 5xx) are
+          # tracked as a CONSECUTIVE counter, not a sticky flag: a blip that
+          # self-resolves on the next iteration must not fail the job once the
+          # backlog finishes draining. The job only fails if MAX_CONSECUTIVE_FAILURES
+          # in a row never recover, or the loop exhausts its iterations.
+          MAX_CONSECUTIVE_FAILURES=3
+          CONSECUTIVE_FAILURES=0
           for i in $(seq 1 40); do
             echo "--- pipeline iteration $i ---"
             BODY=$(mktemp)
@@ -70,7 +77,11 @@ jobs:
             if [ "$CODE" != "200" ] || ! jq -e . "$BODY" >/dev/null 2>&1; then
               echo "::warning::Pipeline iteration $i did not return HTTP 200 / valid JSON (got $CODE)."
               cat "$BODY"
-              FAILED=1
+              CONSECUTIVE_FAILURES=$((CONSECUTIVE_FAILURES + 1))
+              if [ "$CONSECUTIVE_FAILURES" -ge "$MAX_CONSECUTIVE_FAILURES" ]; then
+                echo "::error::$CONSECUTIVE_FAILURES consecutive iterations failed to return HTTP 200 / valid JSON; giving up."
+                exit 1
+              fi
               sleep 15
               continue
             fi
@@ -85,19 +96,24 @@ jobs:
             if [ "$(jq -r '.success' "$BODY")" != "true" ]; then
               echo "::error::Pipeline run reported an endpoint-level failure; check the errors table."
               cat "$BODY"
-              FAILED=1
+              CONSECUTIVE_FAILURES=$((CONSECUTIVE_FAILURES + 1))
+              if [ "$CONSECUTIVE_FAILURES" -ge "$MAX_CONSECUTIVE_FAILURES" ]; then
+                echo "::error::$CONSECUTIVE_FAILURES consecutive iterations reported an endpoint-level failure; giving up."
+                exit 1
+              fi
               sleep 15
               continue
             fi
 
+            CONSECUTIVE_FAILURES=0
             cat "$BODY"
             echo
             if [ "$(jq -r '.hasRemaining' "$BODY")" != "true" ]; then
               echo "Pipeline finished."
-              exit $FAILED
+              exit 0
             fi
             echo "More work remaining, waiting 15s before next iteration..."
             sleep 15
           done
           echo "::error::Pipeline reached max iterations without finishing."
-          exit $FAILED
+          exit 1
