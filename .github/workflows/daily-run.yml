@@ -67,7 +67,7 @@ jobs:
           # in a row never recover, or the loop exhausts its iterations.
           MAX_CONSECUTIVE_FAILURES=3
           CONSECUTIVE_FAILURES=0
-          for i in $(seq 1 40); do
+          for i in $(seq 1 80); do
             echo "--- pipeline iteration $i ---"
             BODY=$(mktemp)
             CODE=$(curl -sS -o "$BODY" -w '%{http_code}' \
