@@ -350,7 +350,7 @@ jobs:
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
           FAILED=0
-          for i in $(seq 1 40); do
+          for i in $(seq 1 80); do
             echo "--- pipeline iteration $i ---"
             RESPONSE=$(curl -sS -X GET -H "x-cron-secret: $CRON_SECRET" \
               -w $'\nHTTP_STATUS:%{http_code}' \
